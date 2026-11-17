@@ -5,28 +5,17 @@
 AVA Data Profiling is a DuckDB SQL project for profiling tabular data, inspired by [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling). Its focus is on statistics you can query and reuse, from missingness and value counts to distributions and duplicate groups.
 
 > [!NOTE]
-> The library is in the design stage. The example below runs directly in DuckDB.
+> The library is in the design stage. The example shows the proposed AVA SQL interface.
 
-## Quick start
+## Usage example
 
-Run this query in DuckDB to check the size, missingness, cardinality and mean of a small order amount column.
+Suppose `orders` is a DuckDB table with numeric columns `amount` and `quantity`, a text column `channel`, and a timestamp column `created_at`.
 
 ```sql
-WITH orders(amount) AS (
-    VALUES (10), (20), (30), (40), (50), (60), (NULL), (NULL)
-)
-SELECT
-    COUNT(*) AS n,
-    COUNT(*) - COUNT(amount) AS n_missing,
-    (COUNT(*) - COUNT(amount))::DOUBLE / NULLIF(COUNT(*), 0) AS p_missing,
-    COUNT(DISTINCT amount) AS n_distinct,
-    AVG(amount) AS mean
-FROM orders;
+SELECT * FROM ava_profile('orders');
 ```
 
-| `n` | `n_missing` | `p_missing` | `n_distinct` | `mean` |
-| ---: | ---: | ---: | ---: | ---: |
-| 8 | 2 | 0.25 | 6 | 35 |
+The proposed call covers the core metrics that apply to this table. It summarizes row and column counts, counts by column type, and duplicate-group counts and rates, as well as missing values, frequencies and distinct counts for each column. It also computes numeric ranges, aggregates, quantiles and histograms, string lengths for `channel`, and the time range for `created_at`. For the numeric pair, it computes Pearson and Spearman correlations.
 
 ## Core metrics
 

@@ -5,28 +5,17 @@
 AVA 数据画像是一个面向 DuckDB SQL 的数据画像项目，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。从缺失值、取值频数到分布和重复组，统计结果都可以用 SQL 查询和复用。
 
 > [!NOTE]
-> 项目目前处于设计阶段。下面的示例可以直接在 DuckDB 中运行。
+> 项目目前处于设计阶段。下面展示拟议的 AVA SQL 调用方式。
 
-## 快速开始
+## 使用示例
 
-在 DuckDB 中运行这段查询，查看一列订单金额共有多少行、缺了多少、有多少种取值，以及平均金额。
+假设 DuckDB 中有一张 `orders` 表，其中 `amount` 和 `quantity` 是数值列，`channel` 是文本列，`created_at` 是时间戳列。
 
 ```sql
-WITH orders(amount) AS (
-    VALUES (10), (20), (30), (40), (50), (60), (NULL), (NULL)
-)
-SELECT
-    COUNT(*) AS n,
-    COUNT(*) - COUNT(amount) AS n_missing,
-    (COUNT(*) - COUNT(amount))::DOUBLE / NULLIF(COUNT(*), 0) AS p_missing,
-    COUNT(DISTINCT amount) AS n_distinct,
-    AVG(amount) AS mean
-FROM orders;
+SELECT * FROM ava_profile('orders');
 ```
 
-| `n` | `n_missing` | `p_missing` | `n_distinct` | `mean` |
-| ---: | ---: | ---: | ---: | ---: |
-| 8 | 2 | 0.25 | 6 | 35 |
+这次调用覆盖适用于订单表的核心指标。表级统计给出行列数、各类型列数、重复组数及其比例，各列统计缺失值、取值频数和不同值数。数值列再算范围、基础聚合、分位数和直方图，`channel` 计算文本长度，`created_at` 计算时间范围。两列数值之间还会计算 Pearson 和 Spearman 相关性。
 
 ## 核心指标
 
