@@ -1,0 +1,135 @@
+[English](./README.md) | **简体中文**
+
+# AVA 数据画像
+
+用 DuckDB SQL 做数据画像。通过表函数查看表或视图的基本情况、了解数据分布，并发现可能的数据质量问题。统计在 DuckDB 中完成，报告客户端直接使用查询结果。
+
+项目灵感来自 `fg-data-profiling` 一次调用即可开展探索性数据分析的做法。[fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)
+
+> [!NOTE]
+> 这份 README 是设计草案。下文的 SQL 函数和发布阶段为拟议方案。
+
+## 用法
+
+将表名或视图名传给 `ava_profile()`。需要分析文件、筛选后的数据或多表连接结果时，可以先把查询定义为视图。
+
+```sql
+CREATE TEMP VIEW orders AS
+SELECT * FROM read_parquet('orders.parquet');
+
+SELECT * FROM ava_profile('orders');
+```
+
+按需指定字段，也可以请求精确计数和分位数。
+
+```sql
+SELECT *
+FROM ava_profile(
+    'orders',
+    columns := ['amount', 'channel'],
+    quantiles := [0.05, 0.25, 0.5, 0.75, 0.95],
+    exact := true
+);
+```
+
+画像结果可以继续参与 SQL 查询。例如，按缺失率从高到低查看各列。
+
+```sql
+SELECT column_name, value::DOUBLE AS missing_rate
+FROM ava_profile('orders')
+WHERE metric = 'missing_rate'
+ORDER BY missing_rate DESC NULLS LAST;
+```
+
+## 画像能力
+
+**首版默认**表示运行 `ava_profile(source)` 时直接计算。**首版按需**表示首版提供该能力，需要显式指定选项或调用相应函数。**后续支持**表示计划在后续版本中实现。
+
+下表参照 `fg-data-profiling` 的公开功能，也包括需开启选项才能使用的专项分析。表中的阶段对应 AVA 数据画像的实现计划。[参考报告](https://docs.profiling.ydata.ai/latest/examples/census/census_report.html) · [参考配置](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/config_default.yaml)
+
+| 范围 | 统计与分析内容 | 阶段 |
+| --- | --- | --- |
+| **数据集概览** | 行数、总列数、参与画像的列数、各类型的列数，以及参与画像的单元格中缺失值的数量和比例 | 首版默认 |
+| **列概览** | DuckDB 字段类型、依据表结构映射出的分析类型、非 `NULL` 数量、缺失数和缺失率，以及不同值数量和比例的近似值 | 首版默认 |
+| **类型推断** | 根据实际值推断分析类型，例如取值种类较少的数值类别、看起来像日期或布尔值的字符串、自由文本、URL、路径、文件和图像。允许手动指定类型。 | 后续支持 |
+| **存储占用** | 在数据源提供可解释的计量信息时，统计数据集和各列的大小及平均每行字节数，并说明各数据源的统计口径 | 后续支持 |
+| **数值统计** | 最小值、最大值、极差、总和、均值、样本方差、样本标准差、变异系数、偏度和超额峰度 | 首版默认 |
+| **特殊数值** | 零值、负值、`NaN`、正无穷和负无穷的数量与比例 | 首版默认 |
+| **分位数与离散程度** | 按指定的分位点计算，包括中位数和四分位数。请求第一、第三四分位数时计算四分位距（IQR）。支持近似和精确计算。 | 首版按需 |
+| **数值分布** | 直方图的分箱边界与计数，以及两端的较小值、较大值及其出现频次 | 首版按需 |
+| **进阶数值分析** | 中位数绝对偏差（MAD）、单调性、均匀性检验和离群值摘要 | 后续支持 |
+| **不同值与唯一性** | 不同值的精确数量和比例、只出现一次的值的数量和比例，以及所有非缺失值是否各自只出现一次 | 首版按需 |
+| **类别频次** | 最常见和最少见的值及其频次和占比、众数及其占比，以及按需返回的完整频数表 | 首版按需 |
+| **类别一致性** | 类别失衡、均匀性检验，以及可能指向同一类别的拼写或格式变体 | 后续支持 |
+| **布尔值** | 真值和假值的数量与比例 | 首版默认 |
+| **文本长度** | 空字符串和仅含空白字符的字符串数量，以及最短、最长和平均字符数 | 首版默认 |
+| **文本分布** | 长度中位数、长度直方图、词频、字符频次，以及 Unicode 类别、书写系统和区块的统计 | 后续支持 |
+| **日期与时间戳** | 最早值、最晚值及两者之间的时间跨度 | 首版默认 |
+| **日期分布** | 日期或时间戳直方图，以及分析日期格式字符串时无法解析的值的数量 | 后续支持 |
+| **完全重复** | 按整行或指定列比较，统计重复组数、重复行数和重复行比例 | 首版按需 |
+| **近似重复** | 识别内容相似的行，并汇总可能重复的行组 | 后续支持 |
+| **缺失模式** | 对指定列两两统计同时缺失的行数，以及两列缺失情况的相关性 | 首版按需 |
+| **行级缺失情况** | 为显式选取的样本返回逐行逐列的缺失标记，可用于绘制缺失矩阵 | 后续支持 |
+| **数值相关性** | 对指定数值列两两计算 Pearson 相关系数和参与计算的有效行数 | 首版按需 |
+| **秩相关与混合类型关联** | 支持 Spearman、Kendall、Cramér’s V 和 Phi-K。自动模式按字段类型选择方法，计算混合类型列的关联时先对数值分箱。 | 后续支持 |
+| **变量交互** | 返回成对的值或分箱计数，为散点图等联合分布视图提供数据 | 后续支持 |
+| **基础告警** | 空表或空视图、缺失值、常量列、文本长度恒定、零值、非有限值、明显偏态和不受支持的类型 | 首版默认 |
+| **按需分析告警** | 从精确频次判断高基数和唯一性，从重复分析识别重复行，从指定列对的 Pearson 结果识别高相关 | 首版按需 |
+| **进阶告警** | 类别失衡、均匀分布、类别写法不一致、疑似日期字符串、近似重复、非平稳和季节性 | 后续支持 |
+| **时间序列** | 时间索引缺口、缺失观测、滞后自相关、自相关函数和偏自相关函数（ACF/PACF）、平稳性、季节性，以及时序图所需的数据 | 后续支持 |
+| **URL 与路径** | URL 的协议、主机等组成部分，以及上级目录、文件名和扩展名等路径信息 | 后续支持 |
+| **文件与图像** | 文件大小和时间戳、图像尺寸、图像文件是否截断和 EXIF 摘要。通过表或视图提供元数据，由 DuckDB 完成汇总。 | 后续支持 |
+| **数据集对比** | 对比多个版本或数据集的结构、缺失情况、类别频次，并用同一套分箱边界比较分布 | 后续支持 |
+
+[数值统计](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/pandas/describe_numeric_pandas.py) · [类别与文本统计](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/model/pandas/describe_categorical_pandas.py) · [告警规则](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/alerts.py) · [相关性与缺失模式](https://docs.profiling.ydata.ai/4.16/advanced_settings/available_settings/) · [时间序列](https://docs.profiling.ydata.ai/latest/features/time_series_datasets/) · [数据集对比](https://docs.profiling.ydata.ai/latest/features/comparing_datasets/)
+
+## SQL API
+
+| 函数 | 返回结果 |
+| --- | --- |
+| `ava_profile(source, columns := [], quantiles := [], exact := false)` | 每项指标返回一行，包含 `column_name`、`column_type`、`metric`、`value`（`JSON`）和 `is_approximate`。表级指标的列名和类型为 `NULL`。设为 `exact := true` 后，计算精确的不同值和唯一性指标，所请求的分位数也使用精确计算。 |
+| `ava_profile_histogram(source, column_name, bins := 10)` | 每个数值分箱返回一行，包含边界和计数。 |
+| `ava_profile_top_values(source, column_name, k := 10)` | 每个返回的值占一行，包含频次和占比。设为 `k := NULL` 可返回完整频数表，再按频次排序即可查看最少见的值。 |
+| `ava_profile_duplicates(source, columns := [])` | 返回重复组数、重复行数、重复行比例和已触发的重复告警。列列表为空时比较整行。 |
+| `ava_profile_missingness(source, columns)` | 返回指定列中每两列同时缺失的行数，以及缺失情况的相关性。 |
+| `ava_profile_correlations(source, columns)` | 每对指定数值列返回一行，包含 `left_column`、`right_column`、`n_pairs`、`pearson_r` 和已触发的相关性告警。 |
+
+```sql
+SELECT * FROM ava_profile_histogram('orders', 'amount', bins := 12);
+SELECT * FROM ava_profile_top_values('orders', 'channel', k := 5);
+SELECT * FROM ava_profile_duplicates('orders', columns := ['order_id']);
+SELECT * FROM ava_profile_missingness('orders', ['amount', 'channel']);
+SELECT * FROM ava_profile_correlations('orders', ['amount', 'quantity']);
+```
+
+### 统计口径
+
+- **缺失值。** `null_count` 统计 SQL `NULL`，`missing_count` 还包含浮点 `NaN`。表级缺失指标按参与画像的列计算。分母为零时，比例返回 `NULL`。
+- **不同值与唯一性。** 不同值数量反映一列有多少种非缺失取值。只出现一次的值单独计数。两种比例都以非缺失值数量为分母，字段是否唯一则根据精确计数判断。
+- **数值计算。** 数值摘要、直方图和相关性使用有限数值。特殊数值单独计数。有效行数太少，或参与计算的任一列方差为零时，相关系数返回 `NULL`。
+- **重复行。** 至少两行在所选列上的值相同时，构成一组重复。每组从计数中扣除一行，其余行计入重复行数。判断一组列能否作为候选键时，还需核对这些列是否有缺失。
+- **告警。** 告警包含触发规则、涉及的表或列、观测值及适用阈值。判断单调性或查找时间缺口等依赖行顺序的分析，需要显式指定排序列。
+
+## 报告与交互
+
+DuckDB 函数返回指标、分箱、频次和告警。AVA 或其他客户端可以根据这些结果生成报告与交互视图。
+
+| 能力 | 交付方式 |
+| --- | --- |
+| **SQL 查询与结构化导出** | 首版提供。可通过 DuckDB 查询、保存画像结果，也可以导出为 JSON 或 CSV。 |
+| **报告概览与列详情** | 后续由报告客户端提供，展示指标表、分布、相关性、缺失情况和告警。 |
+| **样本和重复行预览** | 后续由报告客户端提供。需要显式请求并限制预览行数，报告作者可以控制是否展示原始值。 |
+| **数据集对比** | 后续由报告客户端提供。使用 DuckDB 计算的对比结果，并排展示不同数据集的画像。 |
+| **分享报告与 Notebook 集成** | 后续由报告客户端提供。可导出独立的 HTML 报告，并提供可嵌入 Notebook 的视图。 |
+| **交互式探索** | 后续由报告客户端提供。用户筛选数据或选择字段后，客户端请求对应的 SQL 结果。 |
+| **元数据、外观与可复现性** | 后续由报告客户端提供。可添加数据集描述和数据字典、调整报告样式，并记录数据来源、DuckDB 版本、运行设置和耗时。 |
+
+[参考报告用法](https://docs.profiling.ydata.ai/latest/getting-started/quickstart/) · [敏感数据设置](https://docs.profiling.ydata.ai/latest/features/sensitive_data/) · [自定义报告](https://docs.profiling.ydata.ai/latest/features/custom_reports/)
+
+## 实现方式
+
+首版采用 DuckDB SQL 表宏。用 `query_table()` 解析表名和视图名，再通过 `COLUMNS()` 对所选字段应用聚合函数。Node.js 等 DuckDB 客户端可直接通过现有连接调用。[DuckDB 表宏](https://duckdb.org/docs/1.5/sql/statements/create_macro) · [动态引用表和视图](https://duckdb.org/docs/1.5/guides/sql_features/query_and_query_table_functions)
+
+将可以合并计算的默认指标放进同一条聚合查询。执行前确定使用精确聚合还是近似聚合。完整频数、重复分组和列间两两分析按需运行，客户端接收汇总结果用于展示。[DuckDB 聚合函数](https://duckdb.org/docs/1.5/sql/functions/aggregates)
+
+已在 DuckDB 1.5.5 上验证了所需的表宏基础能力。拟议函数的完整行为、与参考库的指标对照以及端到端性能还有待验证。
