@@ -45,7 +45,7 @@ ORDER BY missing_rate DESC NULLS LAST;
 
 **首版默认**表示运行 `ava_profile(source)` 时直接计算。**首版按需**表示首版提供该能力，需要显式指定选项或调用相应函数。**后续支持**表示计划在后续版本中实现。
 
-下表参照 `fg-data-profiling` 的公开功能，也包括需开启选项才能使用的专项分析。表中的阶段对应 AVA 数据画像的实现计划。[参考报告](https://docs.profiling.ydata.ai/latest/examples/census/census_report.html) · [参考配置](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/config_default.yaml)
+下表参照 `fg-data-profiling` 的公开功能，也包括需开启选项才能使用的专项分析。表中的阶段对应 AVA 数据画像的实现计划。
 
 | 范围 | 统计与分析内容 | 阶段 |
 | --- | --- | --- |
@@ -80,8 +80,6 @@ ORDER BY missing_rate DESC NULLS LAST;
 | **URL 与路径** | URL 的协议、主机等组成部分，以及上级目录、文件名和扩展名等路径信息 | 后续支持 |
 | **文件与图像** | 文件大小和时间戳、图像尺寸、图像文件是否截断和 EXIF 摘要。通过表或视图提供元数据，由 DuckDB 完成汇总。 | 后续支持 |
 | **数据集对比** | 对比多个版本或数据集的结构、缺失情况、类别频次，并用同一套分箱边界比较分布 | 后续支持 |
-
-[数值统计](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/pandas/describe_numeric_pandas.py) · [类别与文本统计](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/model/pandas/describe_categorical_pandas.py) · [告警规则](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/alerts.py) · [相关性与缺失模式](https://docs.profiling.ydata.ai/4.16/advanced_settings/available_settings/) · [时间序列](https://docs.profiling.ydata.ai/latest/features/time_series_datasets/) · [数据集对比](https://docs.profiling.ydata.ai/latest/features/comparing_datasets/)
 
 ## SQL API
 
@@ -124,12 +122,10 @@ DuckDB 函数返回指标、分箱、频次和告警。AVA 或其他客户端可
 | **交互式探索** | 后续由报告客户端提供。用户筛选数据或选择字段后，客户端请求对应的 SQL 结果。 |
 | **元数据、外观与可复现性** | 后续由报告客户端提供。可添加数据集描述和数据字典、调整报告样式，并记录数据来源、DuckDB 版本、运行设置和耗时。 |
 
-[参考报告用法](https://docs.profiling.ydata.ai/latest/getting-started/quickstart/) · [敏感数据设置](https://docs.profiling.ydata.ai/latest/features/sensitive_data/) · [自定义报告](https://docs.profiling.ydata.ai/latest/features/custom_reports/)
-
 ## 实现方式
 
-首版采用 DuckDB SQL 表宏。用 `query_table()` 解析表名和视图名，再通过 `COLUMNS()` 对所选字段应用聚合函数。Node.js 等 DuckDB 客户端可直接通过现有连接调用。[DuckDB 表宏](https://duckdb.org/docs/1.5/sql/statements/create_macro) · [动态引用表和视图](https://duckdb.org/docs/1.5/guides/sql_features/query_and_query_table_functions)
+首版采用 DuckDB SQL 表宏。用 `query_table()` 解析表名和视图名，再通过 `COLUMNS()` 对所选字段应用聚合函数。Node.js 等 DuckDB 客户端可直接通过现有连接调用。
 
-将可以合并计算的默认指标放进同一条聚合查询。执行前确定使用精确聚合还是近似聚合。完整频数、重复分组和列间两两分析按需运行，客户端接收汇总结果用于展示。[DuckDB 聚合函数](https://duckdb.org/docs/1.5/sql/functions/aggregates)
+将可以合并计算的默认指标放进同一条聚合查询。执行前确定使用精确聚合还是近似聚合。完整频数、重复分组和列间两两分析按需运行，客户端接收汇总结果用于展示。
 
 已在 DuckDB 1.5.5 上验证了所需的表宏基础能力。拟议函数的完整行为、与参考库的指标对照以及端到端性能还有待验证。

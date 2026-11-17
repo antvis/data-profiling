@@ -45,7 +45,7 @@ ORDER BY missing_rate DESC NULLS LAST;
 
 **Default** runs with `ava_profile(source)` in the first release. **On demand** is available in the first release through an explicit option or function call. **Later** identifies capabilities planned for a subsequent release.
 
-The coverage below follows the public `fg-data-profiling` feature set, including specialized analyses behind optional settings. The stages describe AVA Data Profiling’s implementation plan. [Reference report](https://docs.profiling.ydata.ai/latest/examples/census/census_report.html) · [Reference settings](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/config_default.yaml)
+The coverage below follows the public `fg-data-profiling` feature set, including specialized analyses behind optional settings. The stages describe AVA Data Profiling’s implementation plan.
 
 | Area | Statistics and analysis | Stage |
 | --- | --- | --- |
@@ -80,8 +80,6 @@ The coverage below follows the public `fg-data-profiling` feature set, including
 | **URLs and paths** | URL components such as scheme and host, and path components such as parent, filename, and extension | Later |
 | **Files and images** | File sizes and timestamps, image dimensions, truncated-image indicators, and EXIF summaries. DuckDB aggregates metadata exposed through a relation. | Later |
 | **Dataset comparison** | Compare profiles across versions or datasets, including schema, missingness, category frequencies, and distributions using shared bins | Later |
-
-[Numeric statistics](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/pandas/describe_numeric_pandas.py) · [Category and text statistics](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/4.20.0/src/data_profiling/model/pandas/describe_categorical_pandas.py) · [Alert rules](https://github.com/Data-Centric-AI-Community/fg-data-profiling/blob/develop/src/data_profiling/model/alerts.py) · [Correlations and missingness](https://docs.profiling.ydata.ai/4.16/advanced_settings/available_settings/) · [Time series](https://docs.profiling.ydata.ai/latest/features/time_series_datasets/) · [Dataset comparison](https://docs.profiling.ydata.ai/latest/features/comparing_datasets/)
 
 ## SQL API
 
@@ -124,12 +122,10 @@ The DuckDB functions return metrics, bins, frequencies, and alerts. AVA or anoth
 | **Interactive exploration** | Later in the report client. Filter or select a column and request the corresponding SQL results. |
 | **Metadata, appearance, and reproducibility** | Later in the report client. Add dataset descriptions, a data dictionary, report styling, and a record of the source, DuckDB version, settings, and run time. |
 
-[Reference report usage](https://docs.profiling.ydata.ai/latest/getting-started/quickstart/) · [Sensitive data settings](https://docs.profiling.ydata.ai/latest/features/sensitive_data/) · [Report customization](https://docs.profiling.ydata.ai/latest/features/custom_reports/)
-
 ## Implementation
 
-Start with DuckDB SQL table macros. Use `query_table()` to resolve tables and views, and `COLUMNS()` to apply aggregates across the selected fields. Any DuckDB client, including Node.js, can call the functions through its existing connection. [DuckDB table macros](https://duckdb.org/docs/1.5/sql/statements/create_macro) · [Dynamic table references](https://duckdb.org/docs/1.5/guides/sql_features/query_and_query_table_functions)
+Start with DuckDB SQL table macros. Use `query_table()` to resolve tables and views, and `COLUMNS()` to apply aggregates across the selected fields. Any DuckDB client, including Node.js, can call the functions through its existing connection.
 
-Combine compatible default statistics into a single aggregate query. Choose exact or approximate aggregates before execution. Run full value frequencies, duplicate grouping, and pairwise analysis only when requested. Return compact results to the client for display. [DuckDB aggregate functions](https://duckdb.org/docs/1.5/sql/functions/aggregates)
+Combine compatible default statistics into a single aggregate query. Choose exact or approximate aggregates before execution. Run full value frequencies, duplicate grouping, and pairwise analysis only when requested. Return compact results to the client for display.
 
 The table-macro primitives were verified on DuckDB 1.5.5. The proposed functions, cross-library metric comparisons, and end-to-end performance still need validation.
