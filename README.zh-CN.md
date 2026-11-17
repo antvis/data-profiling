@@ -11,116 +11,113 @@ AVA 数据画像在 DuckDB 中用 SQL 计算数据集统计。先看行数、字
 
 ## 用法
 
-把表名或视图名传给 `ava_profile()`。要分析文件、筛选后的数据或多表连接结果，可以先定义一个视图。
+把表名或视图名传给拟议的 `ava_profile()` 函数。要分析文件、筛选后的数据或多表连接的结果，可以先定义视图。
 
 ```sql
 CREATE TEMP VIEW orders AS
 SELECT * FROM read_parquet('orders.parquet');
 
-SELECT * FROM ava_profile('orders');
+SELECT * FROM ava_profile('orders', columns := ['amount', 'channel']);
 ```
 
-可以按需指定字段或请求额外统计。是否计算精确频数摘要，以及分位数采用哪种精度，可以分别设置。
+拟议的 `ava_profile_counts()` 函数按键返回精确计数。选一列可以查看取值频数，选多列可以检查组合键。
 
 ```sql
-SELECT *
-FROM ava_profile(
-    'orders',
-    columns := ['amount', 'channel'],
-    options := '{"frequency_summary":true,"quantiles":[0.25,0.5,0.75],"quantile_method":"continuous"}'
-);
-```
-
-需要明细时，指定要执行的分析。下面的示例返回一个字段的频数表。
-
-```sql
-SELECT *
-FROM ava_profile(
-    'orders',
-    analysis := 'frequencies',
-    columns := ['channel'],
-    options := '{"order":"frequency_desc","limit":5}'
-);
+SELECT group_key.channel AS channel, row_count
+FROM ava_profile_counts('orders', ['channel'])
+WHERE group_key.channel IS NOT NULL
+ORDER BY row_count DESC, channel
+LIMIT 5;
 ```
 
 ## 指标目录
 
-**首版默认**表示运行 `ava_profile(source)` 时直接计算。**首版按需**表示首版通过指定分析或选项提供。**后续支持**表示计划在后续版本实现。
+重要性按通用 DuckDB 表格画像库的需求评估，考虑结果有多常用，以及能被多少其他指标复用。重要性、计算开销和发布阶段分别衡量。
 
-表格从基础计数和聚合开始，往下是取值频数、分布、列对和有序观测。末尾列出基于这些结果可以做的对比，以及可以直接推出的状态。
+| 评分 | 含义 |
+| --- | --- |
+| ⭐⭐⭐⭐⭐ | 核心统计，或多项重要指标依赖的基础信息 |
+| ⭐⭐⭐⭐ | 常用，有明确的按需分析价值 |
+| ⭐⭐⭐ | 在特定场景有用，或便于从已有结果直接派生 |
+| ⭐⭐ | 用在较窄但会反复遇到的场景，需要额外输入或方法 |
+| ⭐ | 主要用于独立的专项扩展 |
 
-| 范围 | 指标 | 基础量与统计口径 | 可派生或支持的分析 | 分析方式 | 阶段 |
-| --- | --- | --- | --- | --- | --- |
-| **表结构** | `column_name`, `column_type`, `column_position`, `logical_type` | 读取 DuckDB 解析后的表或视图结构，并将原生类型映射为画像类型。 | 选择字段，并按字段类型选择聚合方式。 | `summary` | 首版默认 |
-| 表结构 | `column_count`, `profiled_column_count`, `column_type_counts` | 分别统计总列数、参与画像的列数和各类型的列数。 | 表宽、类型分布和表级缺失指标的分母。 | `summary` | 首版默认 |
-| **行与单元格** | `row_count` | 统计输入表或视图的全部行。 | 比例的分母、空表判断和批次规模。 | `summary` | 首版默认 |
-| 行与单元格 | `cell_count` | 用行数乘以参与画像的列数。 | 单元格级比例的分母。 | `summary` | 首版默认 |
-| **缺失值** | `null_count`, `nan_count` | 分别统计 SQL NULL 和浮点 NaN。 | 区分 SQL 空值和浮点非数值。 | `summary` | 首版默认 |
-| 缺失值 | `missing_count`, `present_count` | 缺失数为 NULL 数与 NaN 数之和。总行数减缺失数得到非缺失值数。 | 缺失率和取值频率的分母。 | `summary` | 首版默认 |
-| 缺失值 | `null_rate`, `missing_rate`, `present_rate` | 把各自的计数除以总行数。 | 在列、分组或批次之间比较。 | `summary` | 首版默认 |
-| 缺失值 | `missing_cell_count`, `missing_cell_rate` | 将参与画像的各列缺失数相加，再除以单元格总数得到缺失率。 | 表级缺失程度。 | `summary` | 首版默认 |
-| 缺失值 | `rows_with_missing_count`, `complete_row_count` | 任一选中字段缺失的行只计一次，其余为完整行。 | 各字段均完整的样本量。 | `summary` (`row_completeness`) | 首版按需 |
-| 缺失值 | `sentinel_count`, `sentinel_rate` | 统计调用方指定的占位值，例如 N/A 或 -999，再除以总行数得到比例。 | 衡量占位写法涉及多少数据。 | `summary` (`sentinels`) | 首版按需 |
-| **特殊数值** | `positive_infinity_count`, `negative_infinity_count`, `infinity_count`, `infinity_rate` | 分别统计正负无穷，再加总得到无穷值数。比例以总行数为分母。 | 无穷值的数量及其占全部行的比例。 | `summary` | 首版默认 |
-| 特殊数值 | `finite_count`, `finite_rate` | 从数值列的非缺失值数中扣除无穷值数。比例以总行数为分母。 | 数值统计和分布分析的有效样本覆盖率。 | `summary` | 首版默认 |
-| **数值聚合** | `min`, `max`, `range` | 对有限数值取最小值、最大值，两者相减得到极差。 | 取值边界、跨度，以及有限值是否恒定。 | `summary` | 首版默认 |
-| 数值聚合 | `sum`, `mean` | 在同一批有限数值上执行 DuckDB 的 SUM 和 AVG。 | 总量和中心位置。可用各批总和及有限值数合成全量均值。 | `summary` | 首版默认 |
-| 数值聚合 | `variance_samp`, `stddev_samp`, `cv` | 计算样本方差，再开平方得到样本标准差。变异系数是样本标准差除以均值。 | 绝对离散程度，以及零点有实际意义时的相对离散程度。 | `summary` | 首版默认 |
-| 数值聚合 | `zero_count`, `negative_count`, `positive_count`, `zero_rate`, `negative_rate`, `positive_rate` | 对有限数值做条件计数，再除以有限值数得到各自的比例。 | 零值集中度、正负分布和取值范围检查的依据。 | `summary` | 首版默认 |
-| 数值聚合 | `skewness`, `excess_kurtosis` | 使用 DuckDB 的矩统计聚合计算偏度和超额峰度，并记录有效值数。 | 分布的非对称程度和尾部特征。 | `summary` (`moments`) | 首版按需 |
-| **布尔值** | `true_count`, `false_count`, `true_rate`, `false_rate` | 分别统计真值和假值，比例以非缺失值数为分母。 | 布尔值分布和二分类标签占比。 | `summary` | 首版默认 |
-| **文本长度** | `empty_count`, `blank_count` | 分别统计空字符串和非空但仅由空白字符组成的字符串。 | 分别识别空字符串、空白字符串和 SQL NULL。 | `summary` | 首版默认 |
-| 文本长度 | `min_length`, `max_length`, `mean_length` | 对字符长度做数值聚合，长度为零的字符串也计入。 | 长度范围和恒定长度检查。 | `summary` | 首版默认 |
-| **日期与时间戳** | `min_timestamp`, `max_timestamp`, `time_span` | 对有效且有限的日期或时间戳取最早值、最晚值并计算跨度。 | 观测覆盖的时间范围和批次边界。 | `summary` | 首版默认 |
-| **取值频数** | `approx_distinct_count` | 对非缺失值做 DuckDB 近似去重计数，并标记为估算值。 | 快速了解高基数列有多少种取值。 | `summary` (`approx_distinct`) | 首版按需 |
-| 取值频数 | `value_counts` | 对非缺失值分组，精确统计每组的频次。 | 精确不同值数、单例值、众数和高低频值的共同基础。 | `frequencies` | 首版按需 |
-| 取值频数 | `distinct_count`, `distinct_rate` | 统计取值分组数，再除以非缺失值数得到比例。 | 类别规模和候选键检查。 | `summary` (`frequency_summary`) | 首版按需 |
-| 取值频数 | `singleton_count`, `singleton_rate` | 统计频次恰好为 1 的取值组，再除以非缺失值数得到比例。 | 取值只出现一次的观测占比。 | `summary` (`frequency_summary`) | 首版按需 |
-| 取值频数 | `is_unique`, `is_constant` | 要求至少有一个非缺失值。精确不同值数等于非缺失值数时为唯一，精确不同值数为 1 时为常量。 | 非缺失值范围内的唯一性和恒定性。 | `summary` (`frequency_summary`) | 首版按需 |
-| 取值频数 | `value_rate`, `top_values`, `bottom_values` | 用每个值的频次除以计入分析的值数。按频次排序，同频时按固定规则排序。 | 类别占比、前 K 项覆盖率和低频值。 | `frequencies` (`order`, `limit`) | 首版按需 |
-| 取值频数 | `mode`, `mode_count`, `mode_rate` | 复用频次最高的值及其计数和占比。同频时沿用频数表中的取值排序。 | 主要取值及其集中程度。 | `summary` (`frequency_summary`) | 首版按需 |
-| 取值频数 | `low_values`, `high_values` | 按有限数值的取值大小排序，查看两端的值及其精确频次。 | 区分偶发极值和反复出现的边界值。 | `frequencies` (`order`, `finite_only`) | 首版按需 |
-| 取值频数 | `rare_value_count`, `rare_row_rate` | 按指定的低频阈值，计算符合条件的取值数和这些值覆盖的行占比。 | 衡量类别有多稀少，以及涉及多少数据。 | `summary` (`category_stats`) | 后续支持 |
-| 取值频数 | `category_imbalance`, `category_uniformity` | 用明确的方法分析频数表，评估类别的集中程度或均匀性。 | 检查标签和类别分布。 | `summary` (`category_stats`) | 后续支持 |
-| 取值频数 | `normalized_value_counts`, `variant_groups` | 按显式规则标准化后重新分组，保留原始值、标准化结果和频次。 | 发现大小写、空格、格式及疑似拼写变体。 | `frequencies` (`normalize`, `output`) | 后续支持 |
-| **数值分布** | `quantiles` | 对有限数值计算指定分位数，并记录使用精确连续分位数、精确离散分位数还是近似算法。 | 中位数、四分位数和尾部分位数。 | `summary` (`quantiles`, `quantile_method`) | 首版按需 |
-| 数值分布 | `median`, `iqr` | 用 P50 表示中位数。同时请求 P25 和 P75 时，用 P75 减 P25 得到四分位距。 | 稳健的中心位置、离散程度和 IQR 围栏。 | `summary` (`quantiles`) | 首版按需 |
-| 数值分布 | `histogram` | 对有限数值分箱计数，保留箱边界、端点归属规则和界外计数。 | 直方图、分箱占比、分布形状及同分箱对比。 | `histogram` (`bins`, `bin_edges`) | 首版按需 |
-| 数值分布 | `below_threshold_count`, `above_threshold_count` | 按调用方给定的上下界对有限值计数。上下界也可以由先前的画像结果算出。 | 实际尾部计数、越界数量和 IQR 围栏外的数量。 | `summary` (`bounds`) | 首版按需 |
-| 数值分布 | `mad` | 先计算各值与中位数的绝对偏差，再取这些偏差的中位数。 | 稳健的离散程度和基于 MAD 的离群值候选。 | `summary` (`numeric_details`) | 后续支持 |
-| 数值分布 | `uniformity_statistic`, `uniformity_p_value` | 依据明确的期望分布和分箱做检验，记录样本量和方法。 | 检验指定的均匀分布假设。 | `summary` (`numeric_details`) | 后续支持 |
-| **分组计数** | `group_counts` | 按指定列或整行分组，精确统计每组行数。 | 键组合、重复组和重复行数。 | `duplicates` (`output=groups`) | 首版按需 |
-| 分组计数 | `key_missing_rows` | 统计所选键的任一组成列缺失的行数。 | 配合精确唯一性检查判断候选键是否完整。 | `duplicates` | 首版按需 |
-| 分组计数 | `duplicate_group_count`, `rows_in_duplicate_groups`, `duplicate_rows`, `duplicate_rate` | 对行数大于 1 的组分别计组数、加总组内行数和每组扣除一行后的行数。重复率以参与分组的行数为分母。 | 区分落在重复组里的全部行与每组多出的行。 | `duplicates` | 首版按需 |
-| 分组计数 | `near_duplicate_groups`, `near_duplicate_rows` | 指定字段、相似度方法和阈值，形成候选重复组。 | 定位部分取值不同但内容相似的记录。 | `near_duplicates` | 后续支持 |
-| **缺失列对** | `missing_pair_counts` | 对每对指定列统计 n00、n01、n10、n11。第一位表示左列，1 表示缺失。 | 保留两列各自和共同缺失的情况。 | `missingness` | 首版按需 |
-| 缺失列对 | `co_missing_count`, `co_missing_rate` | 用 n11 表示共同缺失数，再除以参与计算的行数得到共同缺失率。 | 两列同时缺失涉及的行数和占比。 | `missingness` | 首版按需 |
-| 缺失列对 | `conditional_missing_rate`, `missingness_correlation` | 用相应的单列缺失数计算条件缺失率。例如右列缺失时左列也缺失的比例为 n11 除以 n01 与 n11 之和。缺失相关性对两列缺失标记计算。 | 对照各列整体缺失情况，看缺失是否集中在同一批行。 | `missingness` | 首版按需 |
-| 缺失列对 | `missing_row_patterns`, `sample_missing_mask` | 按所选列的缺失标记组合分组，或为显式限定的样本返回逐个单元格的缺失标记。 | 常见缺失模式和缺失矩阵。 | `missingness` (`output=patterns`, `output=mask`) | 后续支持 |
-| **数值列对** | `pair_valid_count`, `pair_coverage` | 统计两列都为有限值的行数，再除以输入总行数得到覆盖率。 | 协方差和相关系数的有效样本量。 | `correlations` | 首版按需 |
-| 数值列对 | `covariance_samp`, `pearson_r` | 用同一批有效配对计算样本协方差和 Pearson 相关系数。有效配对不足或任一列方差为零时，相关系数返回 NULL。 | 线性关联和列对比较。 | `correlations` | 首版按需 |
-| **列间关系** | `spearman_rho`, `kendall_tau` | 在共同有效的观测上计算秩关联，并明确并列值的处理规则。 | 顺序关系和单调关联。 | `correlations` (`method`) | 后续支持 |
-| 列间关系 | `joint_value_counts`, `cramers_v` | 对两列取值联合分组，从列联表计算 Cramér’s V。混合类型列对先明确数值分箱。 | 类别关联和混合类型关联。 | `correlations` (`method`, `output=joint_counts`) | 后续支持 |
-| 列间关系 | `phi_k`, `association_method` | 按明确定义的方法从联合分布计算 Phi-K。自动选择算法时，记录每对列使用的方法。 | 便于比较和核对口径的关联矩阵。 | `correlations` (`method`) | 后续支持 |
-| 列间关系 | `joint_histogram`, `paired_sample` | 统计联合分箱，或返回行数明确受限的有效配对样本。 | 联合分布、散点图和变量交互。 | `interactions` (`output`) | 后续支持 |
-| **有序观测** | `adjacent_step_counts`, `monotonicity` | 明确排序键和并列顺序之后，统计相邻值上升、下降和持平的次数。 | 严格和非严格单调性。 | `sequence` (`output=steps`) | 后续支持 |
-| 有序观测 | `time_step_distribution`, `gap_count`, `max_gap` | 计算相邻时间戳之差，再根据声明的预期间隔判断时间缺口。 | 时间索引覆盖范围和缺失观测区间。 | `sequence` (`output=gaps`) | 后续支持 |
-| 有序观测 | `lag_pair_count`, `acf`, `pacf` | 在定义好的序列和滞后集合上计算统计量，记录覆盖率、缺失处理和算法。 | 滞后关系、候选周期和时序图数据。 | `sequence` (`output=lags`) | 后续支持 |
-| 有序观测 | `stationarity_statistic`, `stationarity_p_value`, `seasonality` | 明确算法和参数，例如用 ADF 检查平稳性，并指定检测周期性的方法。 | 平稳性和季节性信号。 | `sequence` (`output=tests`) | 后续支持 |
-| **类型与格式推断** | `inferred_type`, `type_match_count`, `type_match_rate` | 用明确的规则检测类型，记录检测数和命中数，允许手动覆盖类型。 | 识别数值类别、疑似日期或布尔值的文本、自由文本、URL、路径、文件和图像。 | `summary` (`infer_types`) | 后续支持 |
-| 类型与格式推断 | `parse_success_count`, `parse_failure_count`, `parse_failure_rate` | 按指定目标类型和格式尝试解析，需要时明确时区，同时记录尝试解析的值数。 | 检查格式是否一致，定位无法解析为日期、数值或布尔值的文本。 | `summary` (`parse`) | 后续支持 |
-| **日期分布** | `time_bucket_counts` | 按明确的粒度、边界和时区对时间戳分组计数。 | 日期和时间戳直方图，以及各时间段的数据量。 | `histogram` (`time_unit`, `time_zone`) | 后续支持 |
-| **文本分布** | `median_length`, `length_histogram` | 把字符串长度作为数值，复用分位数和分箱计算。 | 文本长度的分布情况。 | `text` (`output=lengths`) | 后续支持 |
-| 文本分布 | `word_counts`, `character_counts` | 提取词或字符，按需要应用指定的大小写和停用词规则，再统计频次。 | 词频和字符频次。 | `text` (`output=words`, `output=characters`) | 后续支持 |
-| 文本分布 | `unicode_category_counts`, `unicode_script_counts`, `unicode_block_counts` | 将字符映射到 Unicode 类别、书写系统或区块，再汇总计数。 | 文字系统构成与字符模式。 | `text` (`output=unicode`) | 后续支持 |
-| **数据源元数据** | `storage_bytes`, `column_storage_bytes`, `bytes_per_row` | 读取数据源提供的存储元数据，并说明口径，例如压缩后的物理字节数。 | 表和列的存储占用。 | `summary` (`storage`) | 后续支持 |
-| 数据源元数据 | `url_component_counts`, `path_component_counts` | 把组成部分解析成列，再复用取值频数计算。 | 协议、主机、目录、文件名和扩展名的分布。 | `text` (`output=url_components`, `output=path_components`) | 后续支持 |
-| 数据源元数据 | `file_size_distribution`, `file_timestamp_range` | 统计 SQL 可读的文件大小、创建时间和修改时间。 | 文件大小和时间戳的分布。 | `file_metadata` (`kind=file`) | 后续支持 |
-| 数据源元数据 | `image_dimension_distribution`, `truncated_image_count`, `exif_counts` | 从 SQL 可查询的元数据关系中读取图像尺寸、截断标记和选定的 EXIF 字段，再做聚合。 | 图像尺寸分布和元数据覆盖情况。 | `file_metadata` (`kind=image`) | 后续支持 |
-| **画像元数据** | `profile_scope`, `method`, `is_approximate` | 记录数据来源、参与画像的列、适用的统计范围、计算方法和近似标记。 | 核对统计口径，并比较口径相同的结果。 | `summary` | 首版默认 |
-| **画像对比** | `metric_delta`, `category_delta`, `bin_delta` | 对齐统计范围和口径一致的画像结果，再比较指标、类别和相同分箱内的计数。 | 行数与缺失率变化、新增或消失的类别，以及分布变化。 | `comparison` (`baseline`, `result_kind`) | 后续支持 |
-| **派生状态** | `is_empty`, `is_all_missing`, `is_constant_length` | 根据行数、非缺失值数和长度上下界派生。整列缺失要求表中有行，恒定长度要求至少有一个实际字符串。 | 默认画像可直接提供的精确状态。 | `summary` | 首版默认 |
-| **派生检查** | `check_result` | 将已保存的指标与指定阈值或参考值比较。输入提供统计范围和分母时，一并返回。 | 高缺失、高基数、偏态、高相关和重复等检查的依据。 | `checks` (`rules`) | 首版按需 |
+本次评估覆盖 **70 行**，其中五星 18 行、四星 24 行、三星 15 行、两星 9 行、一星 4 行。评分以整行为单位。同一行内各指标的价值有差异时，在「价值判断」中注明。
+
+**首版默认**指首版拟直接返回的基础结果。**首版按需**指首版通过显式调用或 DuckDB SQL 用法提供的能力。**后续支持**指还需要额外输入、计算方法或明确返回格式的能力。**后续支持（专项）**对应四个一星项。
+
+| 范围 | 指标 | 重要性 | 基础量与统计口径 | 价值判断 | 计算路径 | 阶段 |
+| --- | --- | --- | --- | --- | --- | --- |
+| **表结构** | `column_name`, `column_type`, `column_position`, `logical_type` | ⭐⭐⭐⭐⭐ | 读取 DuckDB 解析后的表或视图结构，并将原生类型映射为画像类型。 | 决定各列适用的计算，也是定位结果的依据。 | 摘要 | 首版默认 |
+| 表结构 | `column_count`, `profiled_column_count`, `column_type_counts` | ⭐⭐⭐⭐ | 分别统计总列数、参与画像的列数和各类型的列数。 | 表级概览和缺失单元格的分母都用得上，可从字段清单汇总。 | 摘要 | 首版默认 |
+| **行与单元格** | `row_count` | ⭐⭐⭐⭐⭐ | 统计输入表或视图的全部行。 | 是比例、数据完整性和批次对比的基础。 | 摘要 | 首版默认 |
+| 行与单元格 | `cell_count` | ⭐⭐⭐ | 用行数乘以参与画像的列数。 | 用于全表缺失率，可直接由两个计数推出。 | 摘要 | 首版默认 |
+| **缺失值** | `null_count`, `nan_count` | ⭐⭐⭐⭐⭐ | 分别统计 SQL NULL 和浮点 NaN。 | 分开保留计数，方便核对缺失口径。 | 摘要 | 首版默认 |
+| 缺失值 | `missing_count`, `present_count` | ⭐⭐⭐⭐⭐ | 缺失数为 NULL 数与 NaN 数之和。总行数减缺失数得到非缺失值数。 | 缺失统计和取值频率的分母都用得到。 | 摘要 | 首版默认 |
+| 缺失值 | `null_rate`, `missing_rate`, `present_rate` | ⭐⭐⭐⭐⭐ | 把各自的计数除以总行数。 | 缺失率是常用输出，三种比例都复用已有计数。 | 摘要 | 首版默认 |
+| 缺失值 | `missing_cell_count`, `missing_cell_rate` | ⭐⭐⭐ | 将参与画像的各列缺失数相加，再除以单元格总数得到缺失率。 | 适合总览，但可能掩盖关键字段的缺失。 | 摘要 | 首版默认 |
+| 缺失值 | `rows_with_missing_count`, `complete_row_count` | ⭐⭐⭐⭐ | 任一选中字段缺失的行只计一次，其余为完整行。 | 能确定要求所选字段均完整的分析还可使用多少行。 | 条件计数 | 首版按需 |
+| 缺失值 | `sentinel_count`, `sentinel_rate` | ⭐⭐⭐ | 统计调用方指定的占位值，例如 N/A 或 -999，再除以总行数得到比例。 | 数据源明确约定占位值时有用。 | 条件计数 | 首版按需 |
+| **特殊数值** | `positive_infinity_count`, `negative_infinity_count`, `infinity_count`, `infinity_rate` | ⭐⭐⭐⭐ | 分别统计正负无穷，再加总得到无穷值数。比例以总行数为分母。 | 能解释非有限值，以及数值分析有效样本变少的原因。 | 摘要 | 首版默认 |
+| 特殊数值 | `finite_count`, `finite_rate` | ⭐⭐⭐⭐⭐ | 从数值列的非缺失值数中扣除无穷值数。比例以总行数为分母。 | 界定数值聚合和分布分析的有效样本范围。 | 摘要 | 首版默认 |
+| **数值聚合** | `min`, `max`, `range` | ⭐⭐⭐⭐⭐ | 对有限数值取最小值、最大值，两者相减得到极差。 | 取值边界是基础信息，极差直接由两端推出。 | 摘要 | 首版默认 |
+| 数值聚合 | `sum`, `mean` | ⭐⭐⭐⭐⭐ | 在同一批有限数值上执行 DuckDB 的 SUM 和 AVG。 | 总和和均值常用。各批总和与有效数也能用于合成全量均值。 | 摘要 | 首版默认 |
+| 数值聚合 | `variance_samp`, `stddev_samp`, `cv` | ⭐⭐⭐⭐ | 计算样本方差，再开平方得到样本标准差。变异系数是样本标准差除以均值。 | 方差和标准差应用广，变异系数适用范围较窄，可以派生。 | 摘要 | 首版默认 |
+| 数值聚合 | `zero_count`, `negative_count`, `positive_count`, `zero_rate`, `negative_rate`, `positive_rate` | ⭐⭐⭐⭐ | 对有限数值做条件计数，再除以有限值数得到各自的比例。 | 描述正负与零值分布，并为取值范围检查提供依据。 | 摘要 | 首版默认 |
+| 数值聚合 | `skewness`, `excess_kurtosis` | ⭐⭐ | 使用 DuckDB 的矩统计聚合计算偏度和超额峰度，并记录有效值数。 | 有分布分析价值，日常排查通常更容易从分位数和直方图看出问题。 | 原生聚合 | 首版按需 |
+| **布尔值** | `true_count`, `false_count`, `true_rate`, `false_rate` | ⭐⭐⭐⭐ | 分别统计真值和假值，比例以非缺失值数为分母。 | 直接反映布尔值和二分类标签的分布。 | 摘要 | 首版默认 |
+| **文本长度** | `empty_count`, `blank_count` | ⭐⭐⭐⭐ | 分别统计空字符串和非空但仅由空白字符组成的字符串。 | 在文本和表格导入中常见，能与 SQL NULL 分开检查。 | 投影后复用 | 首版默认 |
+| 文本长度 | `min_length`, `max_length`, `mean_length` | ⭐⭐⭐ | 对字符长度做数值聚合，长度为零的字符串也计入。 | 用于排查截断、编码问题和长度约束。 | 摘要 | 首版默认 |
+| **日期与时间戳** | `min_timestamp`, `max_timestamp`, `time_span` | ⭐⭐⭐⭐⭐ | 对有效且有限的日期或时间戳取最早值、最晚值并计算跨度。 | 帮助判断批次是否覆盖了预期的时间范围。 | 原生聚合 | 首版默认 |
+| **取值频数** | `approx_distinct_count` | ⭐⭐⭐⭐ | 对非缺失值做 DuckDB 近似去重计数，并标记为估算值。 | 适合快速了解宽表或高基数列的规模。 | 分组 | 首版按需 |
+| 取值频数 | `value_counts` | ⭐⭐⭐⭐⭐ | 对非缺失值分组，精确统计每组的频次。 | 精确不同值、单例值、众数和 Top-K 共用这一份频数。 | 分组 | 首版按需 |
+| 取值频数 | `distinct_count`, `distinct_rate` | ⭐⭐⭐⭐⭐ | 统计取值分组数，再除以非缺失值数得到比例。 | 经常用于类别画像和候选键检查。 | 分组 | 首版按需 |
+| 取值频数 | `singleton_count`, `singleton_rate` | ⭐⭐⭐⭐ | 统计频次恰好为 1 的取值组，再除以非缺失值数得到比例。 | 能区分只出现一次的值和反复出现的类别。 | 分组 | 首版按需 |
+| 取值频数 | `is_unique`, `is_constant` | ⭐⭐⭐⭐⭐ | 要求至少有一个非缺失值。精确不同值数等于非缺失值数时为唯一，精确不同值数为 1 时为常量。 | 可用于候选键和常量列检查。判断候选键还需检查缺失。 | 分组 | 首版按需 |
+| 取值频数 | `value_rate`, `top_values`, `bottom_values` | ⭐⭐⭐⭐ | 用每个值的频次除以计入分析的值数。按频次排序，同频时按固定规则排序。 | 复用同一份频数，快速查看主流和低频取值。 | 分组 | 首版按需 |
+| 取值频数 | `mode`, `mode_count`, `mode_rate` | ⭐⭐⭐ | 复用频次最高的值及其计数和占比。同频时沿用频数表中的取值排序。 | 从频数首项得到众数及其占比，适合概览。 | 分组 | 首版按需 |
+| 取值频数 | `low_values`, `high_values` | ⭐⭐⭐ | 按有限数值的取值大小排序，查看两端的值及其精确频次。 | 能看出极值是偶发的，还是反复出现的边界值。 | 分组 | 首版按需 |
+| 取值频数 | `rare_value_count`, `rare_row_rate` | ⭐⭐⭐ | 按指定的低频阈值，计算符合条件的取值数和这些值覆盖的行占比。 | 适用于高基数类别，低频阈值要结合任务确定。 | 分组 | 后续支持 |
+| 取值频数 | `category_imbalance`, `category_uniformity` | ⭐⭐⭐ | 用明确的方法分析频数表，评估类别的集中程度或均匀性。 | 失衡指标对标签有用，均匀性检验的适用范围较窄。 | 分组 | 后续支持 |
+| 取值频数 | `normalized_value_counts`, `variant_groups` | ⭐⭐⭐ | 按显式规则标准化后重新分组，保留原始值、标准化结果和频次。 | 明确大小写、空格等标准化规则后，有助于清洗前排查。 | 投影后复用 | 后续支持 |
+| **数值分布** | `quantiles` | ⭐⭐⭐⭐⭐ | 对有限数值计算指定分位数，并记录使用精确连续分位数、精确离散分位数还是近似算法。 | 能补充均值看不到的分布信息，也是四分位数和尾部分位数的基础。 | 分布 | 首版按需 |
+| 数值分布 | `median`, `iqr` | ⭐⭐⭐⭐ | 用 P50 表示中位数。同时请求 P25 和 P75 时，用 P75 减 P25 得到四分位距。 | 可直接由指定分位数推出，是稳健且常用的统计。 | 分布 | 首版按需 |
+| 数值分布 | `histogram` | ⭐⭐⭐⭐ | 对有限数值分箱计数，保留箱边界、端点归属规则和界外计数。 | 能看到分布形状和集中区间，使用同一边界时还可比较。 | 分布 | 首版按需 |
+| 数值分布 | `below_threshold_count`, `above_threshold_count` | ⭐⭐⭐⭐ | 按调用方给定的上下界对有限值计数。上下界也可以由先前的画像结果算出。 | 精确计数可以衡量规则或尾部阈值实际影响多少行。 | 条件计数 | 首版按需 |
+| 数值分布 | `mad` | ⭐⭐⭐ | 先计算各值与中位数的绝对偏差，再取这些偏差的中位数。 | IQR 无法满足分析需要时，可补充一种稳健的离散度量。 | 分布 | 后续支持 |
+| 数值分布 | `uniformity_statistic`, `uniformity_p_value` | ⭐ | 依据明确的期望分布和分箱做检验，记录样本量和方法。 | 对期望分布有明确假设时，检验结果才容易解释。 | 专项检验 | 后续支持（专项） |
+| **分组计数** | `group_counts` | ⭐⭐⭐⭐⭐ | 按指定列或整行分组，精确统计每组行数。 | 同一份分组结果可用于取值频数和精确重复检查。 | 分组 | 首版按需 |
+| 分组计数 | `key_missing_rows` | ⭐⭐⭐⭐⭐ | 统计所选键的任一组成列缺失的行数。 | 判断候选键需要同时检查完整性和唯一性。 | 条件计数 | 首版按需 |
+| 分组计数 | `duplicate_group_count`, `rows_in_duplicate_groups`, `duplicate_rows`, `duplicate_rate` | ⭐⭐⭐⭐⭐ | 对行数大于 1 的组分别计组数、加总组内行数和每组扣除一行后的行数。重复率以参与分组的行数为分母。 | 可区分涉及的全部记录，以及去重会去掉的多余记录。 | 分组 | 首版按需 |
+| 分组计数 | `near_duplicate_groups`, `near_duplicate_rows` | ⭐⭐ | 指定字段、相似度方法和阈值，形成候选重复组。 | 适用于数据清洗和实体匹配，需要明确相似度与分组规则。 | 相似匹配 | 后续支持 |
+| **缺失列对** | `missing_pair_counts` | ⭐⭐⭐⭐ | 对每对指定列统计 n00、n01、n10、n11。第一位表示左列，1 表示缺失。 | 四格计数可以推出各列缺失数、共同缺失和条件缺失。 | 列对 | 首版按需 |
+| 缺失列对 | `co_missing_count`, `co_missing_rate` | ⭐⭐⭐⭐ | 用 n11 表示共同缺失数，再除以参与计算的行数得到共同缺失率。 | 从四格计数直接推出，能看出两列有多少行同时缺失。 | 列对 | 首版按需 |
+| 缺失列对 | `conditional_missing_rate`, `missingness_correlation` | ⭐⭐⭐⭐ | 用相应的单列缺失数计算条件缺失率。例如右列缺失时左列也缺失的比例为 n11 除以 n01 与 n11 之和。缺失相关性对两列缺失标记计算。 | 条件缺失率容易解释，相关系数可以作为辅助摘要。 | 列对 | 首版按需 |
+| 缺失列对 | `missing_row_patterns`, `sample_missing_mask` | ⭐⭐⭐ | 按所选列的缺失标记组合分组，或为显式限定的样本返回逐个单元格的缺失标记。 | 缺失模式便于定位，逐单元格样本主要用于查看和展示。 | 分组与行级结果 | 后续支持 |
+| **数值列对** | `pair_valid_count`, `pair_coverage` | ⭐⭐⭐⭐ | 统计两列都为有限值的行数，再除以输入总行数得到覆盖率。 | 列间统计需要它来说明实际有多少行参与计算。 | 列对 | 首版按需 |
+| 数值列对 | `covariance_samp`, `pearson_r` | ⭐⭐⭐⭐ | 用同一批有效配对计算样本协方差和 Pearson 相关系数。有效配对不足或任一列方差为零时，相关系数返回 NULL。 | 是常用线性关联指标，需要结合有效配对数阅读。 | 列对 | 首版按需 |
+| **列间关系** | `spearman_rho`, `kendall_tau` | ⭐⭐⭐ | 在共同有效的观测上计算秩关联，并明确并列值的处理规则。 | 适合检查顺序和单调关系，需明确并列值与缺失配对的口径。 | 列对 | 后续支持 |
+| 列间关系 | `joint_value_counts`, `cramers_v` | ⭐⭐⭐⭐ | 对两列取值联合分组，从列联表计算 Cramér’s V。混合类型列对先明确数值分箱。 | 联合频数可复用，Cramér’s V 是在此基础上派生的关联指标。 | 列对 | 后续支持 |
+| 列间关系 | `phi_k`, `association_method` | ⭐⭐ | 按明确定义的方法从联合分布计算 Phi-K。自动选择算法时，记录每对列使用的方法。 | Phi-K 属于专项算法，每项关联结果都应记录实际使用的方法。 | 列对 | 后续支持 |
+| 列间关系 | `joint_histogram`, `paired_sample` | ⭐⭐⭐ | 统计联合分箱，或返回行数明确受限的有效配对样本。 | 有助于解释列间关系，样本主要用于下钻和绘图。 | 列对 | 后续支持 |
+| **有序观测** | `adjacent_step_counts`, `monotonicity` | ⭐⭐ | 明确排序键和并列顺序之后，统计相邻值上升、下降和持平的次数。 | 行顺序有实际含义且存在稳定排序键时有用。 | 有序观测 | 后续支持 |
+| 有序观测 | `time_step_distribution`, `gap_count`, `max_gap` | ⭐⭐⭐⭐ | 计算相邻时间戳之差，再根据声明的预期间隔判断时间缺口。 | 检查预期时间间隔是否都有观测时很实用。 | 有序观测 | 后续支持 |
+| 有序观测 | `lag_pair_count`, `acf`, `pacf` | ⭐⭐ | 在定义好的序列和滞后集合上计算统计量，记录覆盖率、缺失处理和算法。 | 常用于时序建模，在通用画像中的使用面较窄。 | 有序观测 | 后续支持 |
+| 有序观测 | `stationarity_statistic`, `stationarity_p_value`, `seasonality` | ⭐ | 明确算法和参数，例如用 ADF 检查平稳性，并指定检测周期性的方法。 | 依赖明确的算法和时序假设，适合专项分析。 | 专项检验 | 后续支持（专项） |
+| **类型与格式推断** | `inferred_type`, `type_match_count`, `type_match_rate` | ⭐⭐⭐⭐ | 用明确的规则检测类型，记录检测数和命中数，允许手动覆盖类型。 | 对类型信息不足的 CSV 和 Excel 有用，命中率可用于核对推断结果。 | 投影后复用 | 后续支持 |
+| 类型与格式推断 | `parse_success_count`, `parse_failure_count`, `parse_failure_rate` | ⭐⭐⭐⭐ | 按指定目标类型和格式尝试解析，需要时明确时区，同时记录尝试解析的值数。 | 为格式有效性和类型推断提供直接证据。 | 投影后复用 | 后续支持 |
+| **日期分布** | `time_bucket_counts` | ⭐⭐⭐⭐ | 按明确的粒度、边界和时区对时间戳分组计数。 | 用于观察时间覆盖、批次数据量和时间分布。 | 分布 | 后续支持 |
+| **文本分布** | `median_length`, `length_histogram` | ⭐⭐⭐ | 把字符串长度作为数值，复用分位数和分箱计算。 | 复用数值分布，帮助发现截断、填充和格式混杂。 | 投影后复用 | 后续支持 |
+| 文本分布 | `word_counts`, `character_counts` | ⭐⭐ | 提取词或字符，按需要应用指定的大小写和停用词规则，再统计频次。 | 适用于自由文本，词频质量取决于语言和分词规则。 | 投影后复用 | 后续支持 |
+| 文本分布 | `unicode_category_counts`, `unicode_script_counts`, `unicode_block_counts` | ⭐⭐ | 将字符映射到 Unicode 类别、书写系统或区块，再汇总计数。 | 适用于控制字符、多语言和混合书写系统排查。 | 投影后复用 | 后续支持 |
+| **数据源元数据** | `storage_bytes`, `column_storage_bytes`, `bytes_per_row` | ⭐⭐ | 读取数据源提供的存储元数据，并说明口径，例如压缩后的物理字节数。 | 取决于数据源元数据，需要说明各格式的物理计量口径。 | 数据源元数据 | 后续支持 |
+| 数据源元数据 | `url_component_counts`, `path_component_counts` | ⭐⭐ | 把组成部分解析成列，再复用取值频数计算。 | 解析后适合分析日志、链接和路径列。 | 投影后复用 | 后续支持 |
+| 数据源元数据 | `file_size_distribution`, `file_timestamp_range` | ⭐ | 统计 SQL 可读的文件大小、创建时间和修改时间。 | 存在 SQL 可读的文件元数据时，适合做文件资产画像。 | 数据源元数据 | 后续支持（专项） |
+| 数据源元数据 | `image_dimension_distribution`, `truncated_image_count`, `exif_counts` | ⭐ | 从 SQL 可查询的元数据关系中读取图像尺寸、截断标记和选定的 EXIF 字段，再做聚合。 | 提取图像元数据后，可用于图像资产画像。 | 数据源元数据 | 后续支持（专项） |
+| **画像元数据** | `profile_scope`, `method`, `is_approximate` | ⭐⭐⭐⭐⭐ | 记录数据来源、参与画像的列、适用的统计范围、计算方法和近似标记。 | 比较结果、区分精确计数与估算值时都需要。 | 结果元数据 | 首版默认 |
+| **画像对比** | `metric_delta`, `category_delta`, `bin_delta` | ⭐⭐⭐⭐⭐ | 对齐统计范围和口径一致的画像结果，再比较指标、类别和相同分箱内的计数。 | 对可比的批次画像和早期变化检查很有价值。 | 画像结果对比 | 后续支持 |
+| **派生状态** | `is_empty`, `is_all_missing`, `is_constant_length` | ⭐⭐⭐⭐ | 根据行数、非缺失值数和长度上下界派生。整列缺失要求表中有行，恒定长度要求至少有一个实际字符串。 | 是值得直接提供的精确状态，可复用已有计数和边界。 | 摘要 | 首版默认 |
+| **派生检查** | `check_result` | ⭐⭐⭐ | 将已保存的指标与指定阈值或参考值比较。输入提供统计范围和分母时，一并返回。 | 适合调用方给出规则后使用，可在 SQL 中直接比较。 | 画像结果对比 | 首版按需 |
 
 ### 计数口径与精度
 
@@ -128,69 +125,69 @@ FROM ava_profile(
 - **有效数值范围。** 数值聚合、直方图和数值相关性使用有限值。样本方差和样本协方差至少需要两个有效观测。均值为零时，变异系数返回 `NULL`。
 - **频数和重复。** 频数摘要使用非缺失值。重复分组沿用 DuckDB 的 `GROUP BY` 规则，对应位置同为空值的键也会归到同一组。检查候选键时，需要同时验证完整性和唯一性。
 - **精度和统计范围。** 记录计算方法，并标记估算值及由估算值派生的指标。唯一性使用精确计数。跨批次可以合并分组计数，或合并边界一致的分箱计数。要合成全量基数或分位数，需要原数据或可合并的聚合状态。
-- **检查。** 底层库提供指标和精确状态。检查分析用调用方指定的规则核对已保存的指标。
+- **检查。** 调用方可以在 SQL 中将返回的指标与明确的阈值或基准比较。
 
 ## SQL API
 
-`ava_profile(source, analysis := 'summary', columns := [], options := '{}')`
+首版拟提供两个表函数。两者都接收 DuckDB 表名或视图名，返回结果的顶层列固定。
 
-每项指标都有一个主归属。目录的 **分析方式** 列给出对应的 `analysis` 和需要额外指定的选项。不同分析可以复用计算。例如，`summary` 使用和 `frequencies` 相同的取值频数来计算精确基数和单例值数，再按每项指标一行返回。
-
-计算原始数据时，`source` 指定输入表或视图。对 `checks` 和 `comparison`，它指定保存了既有统计结果的表或视图。文件和图像画像接收包含元数据的表或视图。DuckDB 绑定查询时，根据所选分析、列和输出选项确定返回结构。
-
-### 首版分析
-
-| 分析 | 输入与选项 | 返回结果 |
+| 拟议函数 | 返回结果 | 覆盖范围 |
 | --- | --- | --- |
-| `summary` | 输入原始表或视图，列列表为空时选择所有列。可选参数包括 `row_completeness`、`moments`、`approx_distinct`、`frequency_summary`、按列指定占位值的 `sentinels`，以及按数值列指定上下界的 `bounds`。用 `quantiles` 传入分位点列表，再通过 `quantile_method` 选择 `continuous`（默认）、`discrete` 或 `approximate`。 | 每项指标一行，包含 `column_name`、`column_type`、`metric`、JSON `value`、`method` 和 `is_approximate`。表级指标的列名和列类型为 `NULL`。`frequency_summary` 派生精确不同值、单例值的计数和比例，以及唯一性、恒定性、众数及其计数和占比。 |
-| `histogram` | 选择一个数值列。用 `bins` 请求分箱数，或用 `bin_edges` 指定可复用的边界。 | 每个分箱一行，包含 `lower_bound`、`upper_bound`、`bucket_kind` 和 `value_count`。适用时另返回低于或高于边界的分箱。 |
-| `frequencies` | 选择一列。`order` 支持 `frequency_desc`、`frequency_asc`、`value_asc` 和 `value_desc`。`limit` 默认为 10，传 JSON `null` 时返回全部取值。查看数值两端取值时可设 `finite_only`。 | 每个返回值占一行，包含原生 SQL 类型的 `value`、精确频次 `value_count` 和相对于计入统计的值的比例 `value_rate`。 |
-| `duplicates` | 输入原始表或视图。指定键列，或留空以按整行分组。`output` 默认为 `summary`，设为 `groups` 可查看分组计数。 | 摘要返回 `row_count`、`key_missing_rows`、`duplicate_group_count`、`rows_in_duplicate_groups`、`duplicate_rows` 和 `duplicate_rate`。分组结果每组一行，包含 `group_key` 和 `row_count`。 |
-| `missingness` | 显式指定至少两列。 | 每对列一行，包含 `left_column`、`right_column`、`n00`、`n01`、`n10`、`n11`、`co_missing_count`、`co_missing_rate`、`left_missing_given_right`、`right_missing_given_left` 和 `missingness_correlation`。 |
-| `correlations` | 显式指定至少两个数值列。首版计算 Pearson 相关。 | 每对列一行，包含 `left_column`、`right_column`、`pair_valid_count`、`pair_coverage`、`covariance_samp` 和 `pearson_r`。 |
-| `checks` | 输入保存好的指标行，需包含 `column_name`、`metric` 和 JSON `value`。重复计数或列对相关性等明细也可以先用 SQL 转成这三列。用 `rules` 为每条规则指定编号、指标、列、比较运算符和阈值。参考值也可以用作阈值。 | 每条规则在每个目标上返回一行，包含观测值、预期值和检查状态。输入提供统计范围和分母时，一并返回。缺少指标或指标无定义时，标记为不可用。 |
+| `ava_profile(source, columns := [])` | 每个表级或列级指标一行，包含 `column_name`、`column_type`、`metric`、JSON `value`、`method` 和 `is_approximate`。表级指标的列名和类型为 `NULL`。`profile_scope` 指标记录数据来源和参与画像的列。列列表为空时画像所有列。 | 表结构、行数、缺失、基础数值统计、布尔值、文本长度、时间范围，以及从这些结果派生的状态和比例。 |
+| `ava_profile_counts(source, columns)` | 每个精确分组一行，包含带字段名和原生类型的 `group_key` 结构体，以及 `row_count`。传空列表时按整行分组。 | 取值频数、类别联合频数、候选键和精确重复分析。含 `NULL` 的键沿用 DuckDB 分组规则。 |
+
+一次频数计算就能提供不同值数、单例值数和计算占比所需的分母。
 
 ```sql
-SELECT * FROM ava_profile(
-    'orders', analysis := 'histogram', columns := ['amount'],
-    options := '{"bins":12}'
-);
-SELECT * FROM ava_profile('orders', analysis := 'duplicates', columns := ['order_id']);
-SELECT * FROM ava_profile('orders', analysis := 'missingness', columns := ['amount', 'channel']);
-SELECT * FROM ava_profile('orders', analysis := 'correlations', columns := ['amount', 'quantity']);
-
-SELECT column_name, value::DOUBLE AS missing_rate
-FROM ava_profile('orders')
-WHERE metric = 'missing_rate'
-ORDER BY missing_rate DESC NULLS LAST;
+WITH channel_counts AS (
+    SELECT row_count
+    FROM ava_profile_counts('orders', ['channel'])
+    WHERE group_key.channel IS NOT NULL
+)
+SELECT
+    COUNT(*) AS distinct_count,
+    COUNT(*) FILTER (WHERE row_count = 1) AS singleton_count,
+    COALESCE(SUM(row_count), 0) AS present_count
+FROM channel_counts;
 ```
+
+同一份分组结果还能算出重复组数、重复组内的全部行数，以及每组多出的行数。验证候选键时，还要统计任一键列有缺失的行数。
 
 ```sql
-CREATE TEMP VIEW order_metrics AS
-SELECT * FROM ava_profile('orders', columns := ['amount']);
-
-SELECT * FROM ava_profile(
-    'order_metrics',
-    analysis := 'checks',
-    options := '{"rules":[{"id":"amount_missing","metric":"missing_rate","column":"amount","op":"lte","threshold":0.05}]}'
-);
+SELECT
+    COUNT(*) AS duplicate_group_count,
+    COALESCE(SUM(row_count), 0) AS rows_in_duplicate_groups,
+    COALESCE(SUM(row_count - 1), 0) AS duplicate_rows
+FROM ava_profile_counts('orders', ['order_id'])
+WHERE row_count > 1;
 ```
 
-### 后续分析与扩展
+### 指标覆盖路径
 
-| 分析 | 输入与选项 | 返回结果 |
+目录每行都有对应的计算路径。派生指标复用成本最低且口径一致的结果。后续能力也标明所需输入和预期返回粒度。
+
+| 计算路径 | 输入与结果 | 调用方式 |
 | --- | --- | --- |
-| `summary` | 在现有模式中增加 `infer_types`、`parse` 和 `storage`，用于类型推断、格式解析和存储大小。用 `numeric_details` 计算 MAD 或按给定期望分布做均匀性检验，用 `category_stats` 计算低频程度、类别失衡或均匀性。 | 沿用摘要结构，增加对应的标量指标及计算方法。 |
-| `histogram` | 扩展到日期或时间戳列，通过 `time_unit` 指定时间粒度，需要时用 `time_zone` 指定时区。 | 每个时间分箱一行，包含边界和计数。 |
-| `frequencies` | 扩展 `normalize` 和 `output`，支持按标准化取值归组，或查看各组包含哪些原始写法。 | 返回标准化频数时每个标准值一行，查看写法变体时每组原始值和标准值的映射一行。 |
-| `missingness` | 为 `output` 增加 `patterns` 和 `mask`。输出缺失标记时，用 `sample_size` 指定样本上限，用 `order_by` 指定排序。 | 每种缺失模式一行，或每个抽样单元格一行并标明是否缺失。 |
-| `correlations` | 为 `method` 增加 Spearman、Kendall、Cramér’s V、Phi-K 和自动选择。混合类型列对使用明确的数值分箱，用 `output=joint_counts` 查看列联表。 | 每对列一行，包含所用方法和系数，或每个联合取值组一行。 |
-| `near_duplicates` | 输入原始表或视图，指定参与比较的列、稳定的 `row_id`、相似度 `method` 和 `threshold`。 | 返回候选组数和涉及的行数，也可查看各组成员。 |
-| `interactions` | 选择两列，用 `output` 请求联合分箱或带行数上限的有效配对样本。 | 每个联合分箱或每条配对样本一行。 |
-| `sequence` | 指定序列列、明确的 `order_by` 和并列顺序。`output` 可选 `steps`、`gaps`、`lags` 或 `tests`，需要时传入预期间隔或滞后阶数。 | 返回相邻变化和时间缺口摘要。ACF/PACF 每个滞后阶数一行，平稳性或季节性每个序列和检验一行。 |
-| `text` | 选择文本列，`output` 可选 `lengths`、`words`、`characters`、`unicode`、`url_components` 或 `path_components`。需要时指定分词或解析规则。 | 返回长度统计，或按长度分箱、词、字符、Unicode 分类或组成部分返回明细。 |
-| `file_metadata` | 输入可查询到所需文件或图像元数据的表或视图，用 `kind` 选择 `file` 或 `image`。 | 返回可用字段的指标与分布，例如大小、时间戳、图像尺寸、截断状态和 EXIF。 |
-| `comparison` | 输入保存当前结果的表或视图，用 `baseline` 指定基准结果。两份结果的 `result_kind`、统计范围、方法、值类型和分箱边界需可比。 | 对齐后每个指标、类别或分箱一行，包含当前值和基准值，以及适用时的差值。 |
+| **摘要和结果元数据** | 输入表或视图，每项表级或列级指标返回一行，并记录统计范围、方法和精度。 | 调用 `ava_profile()`，由已有计数派生摘要比例和状态。 |
+| **分组** | 按指定键得到精确计数。单列分组得到取值频数，多列分组得到键组合或联合频数，整行分组得到完全重复的记录组。 | 调用 `ava_profile_counts()`，用 SQL 派生精确不同值数、单例值数、众数、占比、极端值和重复指标。 |
+| **条件计数和原生聚合** | 指定筛选条件、取值规则或聚合方法，在相应范围内返回一个统计值。 | 用 `COUNT(*) FILTER (WHERE ...)` 检查完整行、占位值和越界值。近似基数和高阶矩可以用 DuckDB 原生聚合。 |
+| **分布** | 输入有限数值，以及分位点或共用分箱边界，返回分位值或分箱计数。 | 使用 `quantile_cont()`、`quantile_disc()`、`approx_quantile()` 或 `histogram()`。由指定分位数派生中位数和 IQR。 |
+| **列对与行级结果** | 所选字段使用同一批输入行。返回列对的计数或系数、联合分箱，或带上限的样本行。 | 用条件计数得到四种缺失组合，用 `corr()` 或 `covar_samp()` 在同一批有限数值配对上求相关系数或协方差，用精确分组得到联合频数。由列联表派生的指标按目录标注的阶段支持。秩关联、Phi-K、联合分箱和样本明细的后续路径见目录。 |
+| **数据投影与数据源元数据** | 通过类型转换或标准化得到新列，再复用摘要、分组或分布。文件和图像统计从 SQL 可查询的元数据开始。 | 提取字段后复用相同接口。按需为解析、分词、Unicode 分类或元数据输入定义口径。 |
+| **有序观测** | 指定排序规则，需要时提供预期间隔或滞后阶数。结果可以是相邻变化、时间缺口或滞后统计。 | 相邻变化和缺口用 SQL 窗口函数。公开 ACF、PACF 等接口前，明确并验证计算方法。 |
+| **相似匹配** | 指定参与比较的字段、稳定行标识和相似度规则。返回候选重复组及其成员。 | 先验证匹配和分组规则，再定义公开接口。 |
+| **画像结果对比** | 输入两份口径可对齐的画像，或一份画像与调用方提供的阈值，得到差值或检查结果。 | 按指标、类别或分箱用 SQL 对齐，或直接在 SQL 中把指标与阈值比较。 |
+| **专项检验** | 需要算法特定的输入，例如期望分布，或带参数的有序序列。返回检验统计量和适用的 p 值。 | 作为后续专项扩展，单独验证假设和计算方法。 |
+
+```sql
+SELECT
+    quantile_cont(amount, [0.25, 0.5, 0.75]) AS quantiles,
+    histogram(amount, [50.0, 100.0, 250.0]) AS histogram
+FROM orders
+WHERE isfinite(amount);
+```
+
+新增公开函数前，先沿目录核对它服务的指标需要什么输入、每行返回什么，以及怎样派生。标记为已支持前，每项指标应有可运行的 SQL 示例。后续能力先定义清楚输入和返回粒度。
 
 ## 报告与交互
 
@@ -203,13 +200,13 @@ DuckDB 负责计算统计，并以查询结果的形式提供给调用方。AVA 
 | **样本和重复行预览** | 后续由客户端提供。显式请求带行数上限的预览，并控制是否展示原始值。 |
 | **数据集对比** | 后续由客户端提供。使用 DuckDB 计算出的对比结果，并排展示口径一致的画像。 |
 | **HTML 与 Notebook** | 后续由客户端提供。支持独立 HTML 导出和可嵌入 Notebook 的视图。 |
-| **交互式探索** | 后续由客户端提供。根据用户的筛选条件和选中列，请求对应的 SQL 分析。 |
+| **交互式探索** | 后续由客户端提供。根据用户的筛选条件和选中列，通过 SQL 查询相应的统计结果。 |
 | **元数据和可复现性** | 后续由客户端提供。加入数据描述、数据字典、报告样式和运行记录，记录输入、参数、DuckDB 版本和耗时。 |
 
 ## 实现方式
 
-首版从 DuckDB SQL 表宏起步。用 `query_table()` 引用输入表或视图，再对参与画像的列使用与类型匹配的聚合函数。先确定本次要跑哪种分析，再用固定模板和校验过的输入生成 SQL。
+首版从 DuckDB SQL 表宏起步。用 `query_table()` 引用输入表或视图，再根据所选列的类型绑定聚合或分组表达式。计数函数在结构体字段中保留分组键原有的类型。
 
-把能一起计算的默认指标合并。一次调用内，多个指标共用频数时只分组一次，再从已有计数推出比例和状态。直方图、重复分组和列对查询按需执行。文件、图像等专项分析从 DuckDB 可以查询的元数据表或视图取数，再做统计。
+合并可一起计算的默认聚合。多个派生指标用到同一份分组计数或其他中间结果时，直接复用。分布和列对统计按需计算。
 
-已在 DuckDB 1.5.5 上验证表宏按分析类型选择查询的方式。拟议指标的完整实现、与参考库的口径对照和端到端性能还有待验证。
+已在 DuckDB 1.5.5 上验证表宏的基础用法。两个函数的接口、与参考库的统计口径对照，以及端到端性能仍需验证。
