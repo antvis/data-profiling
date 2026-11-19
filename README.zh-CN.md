@@ -1,33 +1,123 @@
 [English](./README.md) | **简体中文**
 
-# AVA 数据画像
+# Data Profiling 数据画像
 
-AVA 数据画像是一个面向 DuckDB SQL 的数据画像项目，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。从缺失值、取值频数到分布和重复组，统计结果都可以用 SQL 查询和复用。
+Data Profiling 是一个面向 DuckDB SQL 的数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
 
 > [!NOTE]
-> 项目目前处于设计阶段。下面展示拟议的 AVA SQL 调用方式。
+> 目前已实现 `row_count`、`column_count` 和逐列的 `missing_count`。列选择和下文其余指标仍处于规划阶段。
 
-## 使用示例
+## 快速开始
 
-假设 DuckDB 中有一张 `orders` 表，其中 `amount` 和 `quantity` 是数值列，`channel` 是文本列，`created_at` 是时间戳列。
+库本体是纯 SQL，通过 npm 包交付给 AVA 等 Node.js 项目。包导出 SQL 文本，由调用方在已有的 DuckDB 连接上执行。运行和测试均无需 Python 环境，npm 包也没有运行时依赖。
 
-```sql
-SELECT * FROM ava_profile('orders');
+本地联调时，在调用方项目中安装本仓库：
+
+```sh
+npm install /absolute/path/to/data_profiling
 ```
 
-这次调用覆盖适用于订单表的核心指标。表级统计给出行列数、各类型列数、重复组数及其比例，各列统计缺失值、取值频数和不同值数。数值列再算范围、基础聚合、分位数和直方图，`channel` 计算文本长度，`created_at` 计算时间范围。两列数值之间还会计算 Pearson 和 Spearman 相关性。
+复用已经加载数据的连接：
 
-通过 `columns` 指定本次画像只分析这两个数值列。
+```ts
+import { dataProfilingSQL } from 'data_profiling';
 
-```sql
-SELECT * FROM ava_profile('orders', columns := ['amount', 'quantity']);
+await connection.run(dataProfilingSQL);
+const result = await connection.runAndReadAll(
+  'SELECT * FROM data_profiling(?)',
+  ['orders']
+);
+console.log(result.getRowObjects());
+// [
+//   { column_name: null, metric: 'row_count', value: 3n },
+//   { column_name: null, metric: 'column_count', value: 2n },
+//   { column_name: 'amount', metric: 'missing_count', value: 1n },
+//   { column_name: 'channel', metric: 'missing_count', value: 1n }
+// ]
 ```
 
-## 核心指标
+AVA 在初始化 DuckDB 会话时加载宏，计算画像时再调用。AVA 负责将返回行适配成现有的 `Profile` 结构。注册操作应放在 AVA 内部连接初始化流程中，因为它对外的查询接口只接受只读 `SELECT`。
 
-**重要性**按各组统计对 AVA 通用画像的价值评估。五星是核心指标，四星常用于进一步排查，三星视场景使用，两星用于专项分析，一星适用于少数领域。
+`value` 的 DuckDB 类型是 `BIGINT`，[`@duckdb/node-api`](https://duckdb.org/docs/lts/clients/node_neo/overview) 将其返回为 JavaScript `bigint`。调用方按自身 JSON 协议处理数值转换。
 
-计算标记说明 AVA 针对适用输入类型的拟议行为。
+## DuckDB CLI
+
+在仓库根目录打开 DuckDB CLI，先加载指标定义，再加载统一入口。宏使用 DuckDB 内置的 [`query_table`](https://duckdb.org/docs/stable/guides/sql_features/query_and_query_table_functions) 函数，无需安装扩展。
+
+```sql
+.read sql/metrics/table.sql
+.read sql/metrics/missingness.sql
+.read sql/data_profiling.sql
+
+CREATE TEMP TABLE orders AS
+SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, channel);
+
+SELECT * FROM data_profiling('orders');
+```
+
+| column_name | metric | value |
+| --- | --- | ---: |
+| NULL | row_count | 3 |
+| NULL | column_count | 2 |
+| amount | missing_count | 1 |
+| channel | missing_count | 1 |
+
+结果包含 `column_name`（`VARCHAR`，表级指标为 `NULL`）、`metric`（`VARCHAR`）和 `value`（`BIGINT`）。`row_count` 统计所有行，包括重复行和含 `NULL` 的行；空表返回零。`column_count` 统计表或视图对外暴露的列数，空表也保留实际列数。它读取 [`pragma_table_info`](https://duckdb.org/docs/current/configuration/pragmas#table-information) 元数据，不扫描列值。`missing_count` 逐列统计 SQL `NULL`，空表每列返回零；空字符串、零和 DuckDB 的 `NaN` 不算 `NULL`。支持表、视图和带 schema 的表名，表不存在时保留 DuckDB 的报错。重复加载 SQL 会替换当前 schema 中的同名宏。
+
+`.read` 是 DuckDB CLI 命令。使用其他客户端时，执行 `dataProfilingSQL`，或按上述顺序加载 SQL 文件，再调用宏。
+
+## 目录组织与性能
+
+```text
+sql/
+  metrics/
+    table.sql           # 表级指标，类内用注释块划分
+    missingness.sql     # 列缺失指标
+  data_profiling.sql    # 统一入口与结果组装
+index.cjs               # 先加载指标定义，再加载入口
+tests/
+  data-profiling.test.cjs # 一个 fg-data-profiling 核心对照案例
+  fixtures/core.json     # 共用输入和生成的标答
+  generate-reference.py # 刷新标答，常规测试不运行
+```
+
+同类指标放在一个文件中，用注释块标明各指标的 ID 和计算口径。数值、文本、日期时间等类别，在实现首个对应指标时再新增文件。
+
+简单聚合指标定义成不含 `FROM` 的表达式宏。统一入口先在一次聚合中计算行数和所有列的缺失数，再整理结果格式；列名在聚合后获取，避免空表丢失列名。DuckDB 会[将宏展开为原表达式](https://duckdb.org/docs/2.0/sql/statements/create_macro)，因此拆文件本身不要求增加扫描。npm 入口只在模块加载时读取 SQL 文件，画像查询阶段不重复读取。
+
+后续新增指标时，兼容的聚合先合并计算，再整理结果格式。取值频数、精确分位数、重复检测和列间相关性可能需要独立的查询阶段或较多内存，不能保证所有指标都只扫描一次。应使用 [`EXPLAIN ANALYZE`](https://duckdb.org/docs/current/guides/meta/explain_analyze) 和有代表性的数据验证扫描次数、耗时及内存。目前尚未进行大数据量性能基准测试。
+
+这是指标路线图的基础，还不是覆盖整份 README 的完整执行架构。加入非计数指标前，需要扩展当前的 `BIGINT` 结果，以表达小数、时间和结构化值；列对指标也需要标明两列。文件、图像元数据和 ADF 等检验需要合适的扩展或执行适配，当前聚合 SQL 尚不覆盖。实现对应指标时再补齐这些能力，继续以统一 SQL 入口和分类文件作为接入边界。
+
+## 本地开发
+
+使用 Node.js 22.13 或更高版本。在仓库根目录执行：
+
+```sh
+npm ci
+npm test
+npm pack
+```
+
+`index.cjs` 将指标定义和统一入口合并导出为 `dataProfilingSQL`，`index.d.ts` 提供 TypeScript 声明。测试使用 Node 内置测试框架和 `@duckdb/node-api` 2.0.0-r.1，与当前本地 AVA 仓库的版本一致。驱动仅作为开发依赖。`npm pack` 生成可本地安装的压缩包，目前尚未发布到 npm。
+
+测试只保留一个核心案例：数值、文本、布尔混合列，包含部分缺失、全缺失列和完整列。`tests/fixtures/core.json` 保存输入，以及实际运行 [`fg-data-profiling`](https://pypi.org/project/fg-data-profiling/) 生成的标答。文件内记录参考包版本、配置和字段映射（`table.n`、`table.n_var`、`variables.<column>.n_missing`）。Node 测试整体验证表级和列级结果，不需要 Python。
+
+刷新标答时，在独立 Python 环境安装 `fg-data-profiling==4.20.0`，再运行 `python tests/generate-reference.py`，检查生成的标答差异后再接受。共用案例将 Python 缺失值映射为 SQL `NULL`，不据此认定 DuckDB 的 `NaN` 与 pandas 缺失值口径一致。
+
+## 规划中的列选择
+
+以下为接口设计示例，尚未实现：
+
+```sql
+SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
+```
+
+## 规划中的核心指标
+
+**重要性**按各组统计对通用画像的价值评估。五星是核心指标，四星常用于进一步排查，三星视场景使用，两星用于专项分析，一星适用于少数领域。
+
+计算标记说明库针对适用输入类型的拟议行为。目前只有 `row_count`、`column_count` 和 `missing_count` 已实现。
 
 - `default` 表示默认画像会计算该指标。
 - `minimal` 表示最小画像也会计算该指标。`minimal（文本列）` 表示仅对文本列计算。

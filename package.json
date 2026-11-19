@@ -1,0 +1,27 @@
+{
+  "name": "data_profiling",
+  "version": "0.1.0",
+  "description": "DuckDB SQL metrics for data profiling",
+  "main": "./index.cjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.cjs"
+    }
+  },
+  "files": [
+    "index.cjs",
+    "index.d.ts",
+    "sql"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@duckdb/node-api": "2.0.0-r.1"
+  }
+}
