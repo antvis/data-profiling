@@ -15,8 +15,8 @@ test('new macros in existing and new category files join the profile automatical
       data_profiling_value('integer', (count(*) * 2)::VARCHAR);
   `);
   writeFileSync(join(directory, 'metrics', 'present.sql'), `
-    CREATE OR REPLACE MACRO data_profiling_present_count(column_value) AS
-      data_profiling_value('integer', count(column_value)::VARCHAR);
+    CREATE OR REPLACE MACRO data_profiling_fixture_present_count(column_value) AS
+      data_profiling_present_count(column_value);
   `);
   const definitions = readDefinitionsSQL(directory);
   const sql = await generateProfilingSQL(definitions);
@@ -37,6 +37,8 @@ test('new macros in existing and new category files join the profile automatical
     assert.ok(rows.every((row) => row.protocol_version === 1 && row.table_name === table && row.parameters === '{}'));
     assert.deepEqual(rows.map(({ columns, metric, value }) => [columns, metric, JSON.parse(value as string)]), [
       [[], 'column_count', { type: 'integer', value: '2' }],
+      [['amount'], 'fixture_present_count', { type: 'integer', value: empty ? '0' : '1' }],
+      [["quote'名"], 'fixture_present_count', { type: 'integer', value: empty ? '0' : '2' }],
       [['amount'], 'missing_count', { type: 'integer', value: empty ? '0' : '2' }],
       [["quote'名"], 'missing_count', { type: 'integer', value: empty ? '0' : '1' }],
       [['amount'], 'present_count', { type: 'integer', value: empty ? '0' : '1' }],

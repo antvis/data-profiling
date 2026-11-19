@@ -9,7 +9,9 @@ test('data_profiling.sql routes table and column results through protocol v1', a
   const rows = result.getRowObjectsJson();
   assert.deepEqual(rows.map(({ columns, metric }) => [columns, metric]), [
     [[], 'column_count'], [[], 'row_count'],
-    ...Object.keys(columns).sort().map((name) => [[name], 'missing_count']),
+    ...Object.keys(columns).sort().flatMap((name) => [
+      [[name], 'missing_count'], [[name], 'present_count'],
+    ]),
   ]);
   assert.ok(rows.every((row) => row.protocol_version === 1 && row.table_name === 'sample'));
 });
