@@ -1,0 +1,16 @@
+{
+  "columns": {
+    "amount": "DOUBLE",
+    "channel": "VARCHAR",
+    "approved": "BOOLEAN",
+    "empty": "VARCHAR",
+    "complete": "INTEGER"
+  },
+  "rows": [
+    [120, "web", true, null, 1],
+    [80, null, false, null, 2],
+    [null, "store", null, null, 3],
+    [0, "", true, null, 4],
+    [120, "web", false, null, 5]
+  ]
+}

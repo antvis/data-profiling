@@ -5,11 +5,11 @@
 Data Profiling is a DuckDB SQL library for profiling tabular data, inspired by [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling). Its focus is on statistics you can query and reuse.
 
 > [!NOTE]
-> The library currently provides `row_count`, `column_count` and per-column `missing_count`. Column selection and all other metrics below are planned.
+> Implemented: `row_count`, `column_count` and per-column `missing_count`. Other metrics and column selection remain planned. [Result protocol v1](./docs/result-protocol.md) already defines scalar, distribution and pair representations.
 
 ## Quick start
 
-The library is pure SQL, distributed as an npm package for Node.js consumers such as AVA. It exports the SQL text and uses the consumer's existing DuckDB connection. It requires no Python environment and has no runtime npm dependencies.
+The npm package exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
 
 For local integration, install this repository in the consuming project:
 
@@ -17,34 +17,42 @@ For local integration, install this repository in the consuming project:
 npm install /absolute/path/to/data_profiling
 ```
 
-Use the connection that already contains the data:
-
 ```ts
 import { dataProfilingSQL } from 'data_profiling';
+import type { ProfileResult, ProfileRow } from 'data_profiling';
 
 await connection.run(dataProfilingSQL);
-const result = await connection.runAndReadAll(
-  'SELECT * FROM data_profiling(?)',
-  ['orders']
-);
-console.log(result.getRowObjects());
-// [
-//   { column_name: null, metric: 'row_count', value: 3n },
-//   { column_name: null, metric: 'column_count', value: 2n },
-//   { column_name: 'amount', metric: 'missing_count', value: 1n },
-//   { column_name: 'channel', metric: 'missing_count', value: 1n }
-// ]
+const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
+const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
+  ...row,
+  parameters: JSON.parse(row.parameters),
+  value: JSON.parse(row.value),
+}));
 ```
 
-Load the macro when AVA initializes its DuckDB session, then call it during profiling. AVA remains responsible for adapting these rows to its existing `Profile` structure. Run the registration through AVA's internal connection initialization, since its public query API accepts only read-only `SELECT` statements.
+AVA registers the SQL during internal connection initialization, then calls the macro when profiling. Its public query interface accepts only read-only SELECT statements. AVA adapts the results to its own `Profile` structure.
 
-`value` is a DuckDB `BIGINT`, represented as JavaScript `bigint` by [`@duckdb/node-api`](https://duckdb.org/docs/lts/clients/node_neo/overview). The consumer handles any conversion needed by its JSON contract.
+## Result protocol v1
+
+| Field | Meaning |
+| --- | --- |
+| `protocol_version` | `1`; version of this result contract. |
+| `table_name` | Input table reference as supplied. |
+| `columns` | `[]` for table metrics; one name for column metrics; two ordered names for pairs. |
+| `metric` | Metric ID from the catalog below. |
+| `parameters` | JSON object containing effective metric options. |
+| `value` | Typed JSON value, recursively supporting scalars, lists and objects. |
+
+Exact integers and decimals are strings inside typed values. Floating-point numbers, special numeric values, timestamps, durations and undefined results have explicit encodings. Histogram edges/counts and quantile entries are structured values; pair metrics use the same six columns. See the [full contract, compatibility rules and metric-family shapes](./docs/result-protocol.md), [examples](./docs/result-examples.json) and [TypeScript declarations](./index.d.ts).
+
+The Node driver returns JSON columns as text; parsing them produces `ProfileResult` as shown above. No conversion to JavaScript `number` is required.
 
 ## DuckDB CLI
 
-From the repository root, open the DuckDB CLI and load the metric definitions before the public entry point. The macro uses DuckDB's built-in [`query_table`](https://duckdb.org/docs/stable/guides/sql_features/query_and_query_table_functions) function; no extension is needed.
+Load the protocol helpers, metric categories and public entry point in this order:
 
 ```sql
+.read sql/result.sql
 .read sql/metrics/table.sql
 .read sql/metrics/missingness.sql
 .read sql/data_profiling.sql
@@ -55,55 +63,61 @@ SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, ch
 SELECT * FROM data_profiling('orders');
 ```
 
-| column_name | metric | value |
-| --- | --- | ---: |
-| NULL | row_count | 3 |
-| NULL | column_count | 2 |
-| amount | missing_count | 1 |
-| channel | missing_count | 1 |
+| protocol_version | table_name | columns | metric | parameters | value |
+| --- | --- | --- | --- | --- | --- |
+| 1 | orders | [] | row_count | {} | {"type":"integer","value":"3"} |
+| 1 | orders | [] | column_count | {} | {"type":"integer","value":"2"} |
+| 1 | orders | [amount] | missing_count | {} | {"type":"integer","value":"1"} |
+| 1 | orders | [channel] | missing_count | {} | {"type":"integer","value":"1"} |
 
-The result contains `column_name` (`VARCHAR`, `NULL` for table metrics), `metric` (`VARCHAR`) and `value` (`BIGINT`). `row_count` counts every row, including duplicates and rows containing `NULL`; an empty table returns zero. `column_count` counts the columns exposed by the table or view, including when it is empty. It reads [`pragma_table_info`](https://duckdb.org/docs/current/configuration/pragmas#table-information) metadata without scanning column values. `missing_count` counts SQL `NULL` values in each column; empty inputs return zero for every column. Empty strings, zero and DuckDB `NaN` are not treated as `NULL`. Tables, views and schema-qualified names are supported. Missing tables raise DuckDB errors. Loading the SQL again replaces the macros in the current schema.
+`row_count` includes duplicates and NULL-containing rows. `column_count` reads column metadata. `missing_count` counts SQL NULL, including zero counts for empty inputs; empty strings, zero and DuckDB NaN are not NULL. Tables, views and schema-qualified names are supported. Missing tables raise DuckDB errors. Loading the SQL again replaces the macros in the current schema.
 
-`.read` is a DuckDB CLI command. With another client, execute `dataProfilingSQL` or load the SQL files in the order above before calling the macro.
+`.read` is a CLI command. Other clients execute `dataProfilingSQL`, which includes every required SQL file.
 
-## Organization and performance
+## Organization and execution
 
 ```text
 sql/
+  result.sql               # Shared value and envelope constructors
   metrics/
-    table.sql           # Table metrics, separated by comment blocks
-    missingness.sql     # Column missingness metrics
-  data_profiling.sql    # Public entry point and result assembly
-index.cjs               # Loads metric definitions, then the entry point
+    table.sql              # Table metrics; comment blocks separate definitions
+    missingness.sql        # Column missingness metrics
+  data_profiling.sql       # Batch execution and result routing
+index.cjs                  # SQL export
+index.d.ts                 # Protocol types
+docs/
+  result-protocol.md
+  result-examples.json
 tests/
-  data-profiling.test.cjs # One core comparison with fg-data-profiling
-  fixtures/core.json     # Shared input and generated reference values
-  generate-reference.py # Refreshes the fixture, outside normal tests
+  result.test.cjs
+  metrics/table.test.cjs
+  metrics/missingness.test.cjs
+  data-profiling.test.cjs
+  fixtures/                # Shared input; one reference file per category
+  generate-reference.py
 ```
 
-Keep each category in one file and separate its metrics with comment blocks containing the metric ID and calculation rules. Add categories such as numeric, string and datetime when their first metrics are implemented.
+Category functions own each metric's calculation and typed value. The public entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`; it does not reimplement metric formulas. `row_count` and every column's `missing_count` share one input scan. Column names are recovered after aggregation so empty inputs retain their names. SQL files are read once when the npm module loads.
 
-Simple aggregate metrics are expression macros, without their own `FROM` clause. The public entry point computes row counts and missing counts for all columns in one aggregate, then reshapes the result. Column names are recovered after aggregation so that empty inputs still retain their names. DuckDB [expands macros into their expressions](https://duckdb.org/docs/2.0/sql/statements/create_macro), so splitting definitions across files does not require separate scans. The npm entry loads SQL files once per module load, before any profiling queries run.
+The protocol can represent every metric family listed below without changing its outer columns. Execution support is separate: distributions and pairs can require grouping/sorting or additional stages, while file/image metadata and ADF may need extensions or execution adapters. These capabilities are not implemented yet. Adding them does not require every metric to share one scan. Use EXPLAIN ANALYZE and representative data to verify performance.
 
-As metrics are added, combine compatible aggregates in one query before reshaping the result. Frequency tables, exact quantiles, duplicate detection and pairwise correlations may need separate query stages or substantial state; a single scan is not a guarantee for every metric. Use [`EXPLAIN ANALYZE`](https://duckdb.org/docs/current/guides/meta/explain_analyze) and representative data to check scan counts, time and memory. No large-data performance benchmark has been run yet.
+## Development and reference tests
 
-This is a foundation for the metric roadmap, rather than a complete execution architecture for every metric in the README. Before adding non-count metrics, the current `BIGINT` result needs a representation for decimal, timestamp and structured values. Pairwise metrics also need to identify both columns. File/image metadata and tests such as ADF require suitable extensions or execution adapters; they are not covered by the current SQL aggregates. Add those capabilities when their metrics are implemented, keeping the SQL entry point and category files as the integration boundaries.
-
-## Development
-
-Use Node.js 22.13 or later. From the repository root:
+Use Node.js 22.13 or later:
 
 ```sh
-npm ci
+npm install
 npm test
 npm pack
 ```
 
-`index.cjs` exports the combined metric definitions and public entry point as `dataProfilingSQL`, with TypeScript declarations in `index.d.ts`. Tests use Node's built-in test runner and `@duckdb/node-api` 2.0.0-r.1, matching the current local AVA checkout. The driver is a development dependency only. `npm pack` creates a local installable archive; the package has not been published to npm.
+`package-lock.json` is local-only and ignored by Git. Tests use Node's built-in test runner and `@duckdb/node-api` 2.0.0-r.1 as a development dependency. `npm pack` creates a local installable archive; the package has not been published.
 
-The suite retains one core case: mixed numeric, text and Boolean columns, with partial missingness, an entirely missing column and a complete column. `tests/fixtures/core.json` stores the input and expected output generated by actually running [`fg-data-profiling`](https://pypi.org/project/fg-data-profiling/). Its reference metadata records the package version, options and field mappings (`table.n`, `table.n_var`, `variables.<column>.n_missing`). The Node test compares the full combined output against this fixture; it does not need Python.
+Each SQL file has its corresponding test with one core case. `table.sql` and `missingness.sql` compare their own typed outputs to separate reference fixtures, generated by actually running `fg-data-profiling 4.20.0` against the shared input. `result.sql` checks the published protocol examples; the entry-point test checks routing and column shape. The examples exercise serialization, not implementations of future metrics.
 
-To refresh the reference, install `fg-data-profiling==4.20.0` in a separate Python environment and run `python tests/generate-reference.py`. Review the fixture diff before accepting changed reference values. The shared case maps Python missing values to SQL `NULL`; it does not assert that DuckDB `NaN` has pandas missing-value semantics.
+To refresh the metric references, install `fg-data-profiling==4.20.0` in a separate Python environment and run `python tests/generate-reference.py`. The generator writes `fixtures/table.json` and `fixtures/missingness.json` with package versions, settings and field mappings. Review their diffs before accepting a new reference.
+
+This protocol is not fg's report JSON schema. fg is a numerical reference: `table.n` maps to `row_count`, `table.n_var` to `column_count`, and `variables.<column>.n_missing` to `missing_count`. Our fixtures map Python missing values to SQL NULL, without equating DuckDB NaN to pandas missingness. A future fg-report export would use an adapter rather than change the SQL protocol.
 
 ## Planned column selection
 

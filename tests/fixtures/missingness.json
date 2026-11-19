@@ -1,0 +1,36 @@
+{
+  "reference": {
+    "package": "fg-data-profiling",
+    "version": "4.20.0",
+    "pandas": "2.3.3",
+    "numpy": "2.2.6",
+    "options": {
+      "minimal": true
+    }
+  },
+  "mapping": {
+    "missing_count": "variables.<column>.n_missing"
+  },
+  "expected": {
+    "amount": {
+      "type": "integer",
+      "value": "1"
+    },
+    "channel": {
+      "type": "integer",
+      "value": "1"
+    },
+    "approved": {
+      "type": "integer",
+      "value": "1"
+    },
+    "empty": {
+      "type": "integer",
+      "value": "5"
+    },
+    "complete": {
+      "type": "integer",
+      "value": "0"
+    }
+  }
+}

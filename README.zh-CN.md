@@ -5,11 +5,11 @@
 Data Profiling 是一个面向 DuckDB SQL 的数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
 
 > [!NOTE]
-> 目前已实现 `row_count`、`column_count` 和逐列的 `missing_count`。列选择和下文其余指标仍处于规划阶段。
+> 已实现 `row_count`、`column_count` 和逐列的 `missing_count`，其余指标和列选择仍在规划中。[结果协议 v1](./docs/result-protocol.md) 已定义标量、分布和列对结果的表达方式。
 
 ## 快速开始
 
-库本体是纯 SQL，通过 npm 包交付给 AVA 等 Node.js 项目。包导出 SQL 文本，由调用方在已有的 DuckDB 连接上执行。运行和测试均无需 Python 环境，npm 包也没有运行时依赖。
+npm 包向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
 
 本地联调时，在调用方项目中安装本仓库：
 
@@ -17,34 +17,42 @@ Data Profiling 是一个面向 DuckDB SQL 的数据画像库，灵感来自 [fg-
 npm install /absolute/path/to/data_profiling
 ```
 
-复用已经加载数据的连接：
-
 ```ts
 import { dataProfilingSQL } from 'data_profiling';
+import type { ProfileResult, ProfileRow } from 'data_profiling';
 
 await connection.run(dataProfilingSQL);
-const result = await connection.runAndReadAll(
-  'SELECT * FROM data_profiling(?)',
-  ['orders']
-);
-console.log(result.getRowObjects());
-// [
-//   { column_name: null, metric: 'row_count', value: 3n },
-//   { column_name: null, metric: 'column_count', value: 2n },
-//   { column_name: 'amount', metric: 'missing_count', value: 1n },
-//   { column_name: 'channel', metric: 'missing_count', value: 1n }
-// ]
+const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
+const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
+  ...row,
+  parameters: JSON.parse(row.parameters),
+  value: JSON.parse(row.value),
+}));
 ```
 
-AVA 在初始化 DuckDB 会话时加载宏，计算画像时再调用。AVA 负责将返回行适配成现有的 `Profile` 结构。注册操作应放在 AVA 内部连接初始化流程中，因为它对外的查询接口只接受只读 `SELECT`。
+AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结果适配成自己的 `Profile` 结构。AVA 对外的查询接口只接受只读 SELECT，注册操作不走该接口。
 
-`value` 的 DuckDB 类型是 `BIGINT`，[`@duckdb/node-api`](https://duckdb.org/docs/lts/clients/node_neo/overview) 将其返回为 JavaScript `bigint`。调用方按自身 JSON 协议处理数值转换。
+## 结果协议 v1
+
+| 字段 | 含义 |
+| --- | --- |
+| `protocol_version` | 固定为 `1`，表示结果协议版本。 |
+| `table_name` | 调用时传入的表引用。 |
+| `columns` | 表级为 `[]`，单列放一个列名，列对放两个有序列名。 |
+| `metric` | 下方指标目录中的 ID。 |
+| `parameters` | JSON 对象，记录实际生效的指标参数。 |
+| `value` | 带类型标签的 JSON，支持标量及递归的列表、对象。 |
+
+整数和精确小数以文本保留在带类型的值中，浮点数、特殊数值、时间、时长和未定义结果有明确编码。直方图边界、频数和分位点采用结构化值；列对也使用同样六列。详见[完整协议、兼容规则和各指标族的结构](./docs/result-protocol.md)、[协议示例](./docs/result-examples.json)及 [TypeScript 类型](./index.d.ts)。
+
+Node 驱动将 JSON 列返回为文本，按上例解析后得到 `ProfileResult`，无需强制转成 JavaScript `number`。
 
 ## DuckDB CLI
 
-在仓库根目录打开 DuckDB CLI，先加载指标定义，再加载统一入口。宏使用 DuckDB 内置的 [`query_table`](https://duckdb.org/docs/stable/guides/sql_features/query_and_query_table_functions) 函数，无需安装扩展。
+按以下顺序加载协议辅助函数、分类指标和统一入口：
 
 ```sql
+.read sql/result.sql
 .read sql/metrics/table.sql
 .read sql/metrics/missingness.sql
 .read sql/data_profiling.sql
@@ -55,55 +63,61 @@ SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, ch
 SELECT * FROM data_profiling('orders');
 ```
 
-| column_name | metric | value |
-| --- | --- | ---: |
-| NULL | row_count | 3 |
-| NULL | column_count | 2 |
-| amount | missing_count | 1 |
-| channel | missing_count | 1 |
+| protocol_version | table_name | columns | metric | parameters | value |
+| --- | --- | --- | --- | --- | --- |
+| 1 | orders | [] | row_count | {} | {"type":"integer","value":"3"} |
+| 1 | orders | [] | column_count | {} | {"type":"integer","value":"2"} |
+| 1 | orders | [amount] | missing_count | {} | {"type":"integer","value":"1"} |
+| 1 | orders | [channel] | missing_count | {} | {"type":"integer","value":"1"} |
 
-结果包含 `column_name`（`VARCHAR`，表级指标为 `NULL`）、`metric`（`VARCHAR`）和 `value`（`BIGINT`）。`row_count` 统计所有行，包括重复行和含 `NULL` 的行；空表返回零。`column_count` 统计表或视图对外暴露的列数，空表也保留实际列数。它读取 [`pragma_table_info`](https://duckdb.org/docs/current/configuration/pragmas#table-information) 元数据，不扫描列值。`missing_count` 逐列统计 SQL `NULL`，空表每列返回零；空字符串、零和 DuckDB 的 `NaN` 不算 `NULL`。支持表、视图和带 schema 的表名，表不存在时保留 DuckDB 的报错。重复加载 SQL 会替换当前 schema 中的同名宏。
+`row_count` 包含重复行和含 NULL 的行，`column_count` 读取列元数据。`missing_count` 统计 SQL NULL，空表每列返回零；空字符串、零和 DuckDB NaN 不算 NULL。支持表、视图和带 schema 的表名；表不存在时保留 DuckDB 报错。重复加载会替换当前 schema 中的同名宏。
 
-`.read` 是 DuckDB CLI 命令。使用其他客户端时，执行 `dataProfilingSQL`，或按上述顺序加载 SQL 文件，再调用宏。
+`.read` 是 CLI 命令，其他客户端执行 `dataProfilingSQL` 即可加载全部依赖。
 
-## 目录组织与性能
+## 目录组织与执行
 
 ```text
 sql/
+  result.sql               # 共用的值与结果构造函数
   metrics/
-    table.sql           # 表级指标，类内用注释块划分
-    missingness.sql     # 列缺失指标
-  data_profiling.sql    # 统一入口与结果组装
-index.cjs               # 先加载指标定义，再加载入口
+    table.sql              # 表级指标，类内用注释块划分
+    missingness.sql        # 列缺失指标
+  data_profiling.sql       # 批量执行和结果路由
+index.cjs                  # SQL 导出
+index.d.ts                 # 协议类型
+docs/
+  result-protocol.md
+  result-examples.json
 tests/
-  data-profiling.test.cjs # 一个 fg-data-profiling 核心对照案例
-  fixtures/core.json     # 共用输入和生成的标答
-  generate-reference.py # 刷新标答，常规测试不运行
+  result.test.cjs
+  metrics/table.test.cjs
+  metrics/missingness.test.cjs
+  data-profiling.test.cjs
+  fixtures/                # 共用输入；各分类各自保存标答
+  generate-reference.py
 ```
 
-同类指标放在一个文件中，用注释块标明各指标的 ID 和计算口径。数值、文本、日期时间等类别，在实现首个对应指标时再新增文件。
+分类函数负责指标计算和带类型的值。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`，不重写指标公式。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取 SQL 文件。
 
-简单聚合指标定义成不含 `FROM` 的表达式宏。统一入口先在一次聚合中计算行数和所有列的缺失数，再整理结果格式；列名在聚合后获取，避免空表丢失列名。DuckDB 会[将宏展开为原表达式](https://duckdb.org/docs/2.0/sql/statements/create_macro)，因此拆文件本身不要求增加扫描。npm 入口只在模块加载时读取 SQL 文件，画像查询阶段不重复读取。
+结果协议能表达下方各指标族，无需改动外层六列。执行能力单独扩展：分布和列对可能需要分组、排序或额外阶段，文件、图像元数据和 ADF 可能需要扩展或执行适配，目前尚未实现。不要求所有指标强行共用一次扫描，性能用 EXPLAIN ANALYZE 和代表性数据验证。
 
-后续新增指标时，兼容的聚合先合并计算，再整理结果格式。取值频数、精确分位数、重复检测和列间相关性可能需要独立的查询阶段或较多内存，不能保证所有指标都只扫描一次。应使用 [`EXPLAIN ANALYZE`](https://duckdb.org/docs/current/guides/meta/explain_analyze) 和有代表性的数据验证扫描次数、耗时及内存。目前尚未进行大数据量性能基准测试。
+## 本地开发与标答测试
 
-这是指标路线图的基础，还不是覆盖整份 README 的完整执行架构。加入非计数指标前，需要扩展当前的 `BIGINT` 结果，以表达小数、时间和结构化值；列对指标也需要标明两列。文件、图像元数据和 ADF 等检验需要合适的扩展或执行适配，当前聚合 SQL 尚不覆盖。实现对应指标时再补齐这些能力，继续以统一 SQL 入口和分类文件作为接入边界。
-
-## 本地开发
-
-使用 Node.js 22.13 或更高版本。在仓库根目录执行：
+使用 Node.js 22.13 或更高版本：
 
 ```sh
-npm ci
+npm install
 npm test
 npm pack
 ```
 
-`index.cjs` 将指标定义和统一入口合并导出为 `dataProfilingSQL`，`index.d.ts` 提供 TypeScript 声明。测试使用 Node 内置测试框架和 `@duckdb/node-api` 2.0.0-r.1，与当前本地 AVA 仓库的版本一致。驱动仅作为开发依赖。`npm pack` 生成可本地安装的压缩包，目前尚未发布到 npm。
+`package-lock.json` 只在本地保留，已加入 Git 忽略规则。测试使用 Node 内置测试框架，`@duckdb/node-api` 2.0.0-r.1 仅作开发依赖。`npm pack` 生成可本地安装的压缩包，目前尚未发布。
 
-测试只保留一个核心案例：数值、文本、布尔混合列，包含部分缺失、全缺失列和完整列。`tests/fixtures/core.json` 保存输入，以及实际运行 [`fg-data-profiling`](https://pypi.org/project/fg-data-profiling/) 生成的标答。文件内记录参考包版本、配置和字段映射（`table.n`、`table.n_var`、`variables.<column>.n_missing`）。Node 测试整体验证表级和列级结果，不需要 Python。
+每个 SQL 文件对应一个测试文件，各保留一个核心案例。`table.sql`、`missingness.sql` 分别对照自己的标答文件，标答由同一份输入实际运行 `fg-data-profiling 4.20.0` 生成。`result.sql` 验证公开协议示例，入口测试检查路由和列结构。协议示例只验证序列化，并不代表未来指标已实现。
 
-刷新标答时，在独立 Python 环境安装 `fg-data-profiling==4.20.0`，再运行 `python tests/generate-reference.py`，检查生成的标答差异后再接受。共用案例将 Python 缺失值映射为 SQL `NULL`，不据此认定 DuckDB 的 `NaN` 与 pandas 缺失值口径一致。
+刷新指标标答时，在独立 Python 环境安装 `fg-data-profiling==4.20.0`，运行 `python tests/generate-reference.py`。脚本分别生成 `fixtures/table.json`、`fixtures/missingness.json`，记录包版本、配置和字段映射；接受更新前先检查差异。
+
+本协议与 fg 的报告 JSON 结构不同。fg 用来校验统计值：`table.n` 对应 `row_count`，`table.n_var` 对应 `column_count`，`variables.<column>.n_missing` 对应 `missing_count`。共用输入将 Python 缺失值映射为 SQL NULL，不据此认定 DuckDB NaN 与 pandas 缺失值口径一致。将来若要导出 fg 报告格式，应通过适配层转换，保持核心 SQL 协议稳定。
 
 ## 规划中的列选择
 
