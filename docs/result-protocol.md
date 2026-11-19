@@ -71,7 +71,15 @@ not a claim that the corresponding computations have been implemented.
 
 - Category files own calculations and typed value encoding. For example, `data_profiling_row_count()`
   returns `data_profiling_value('integer', count(*)::VARCHAR)`.
-- `sql/data_profiling.sql` batches compatible aggregates and routes their results. It does not reimplement metric formulas.
+- `npm run build` loads all `sql/metrics/*.sql` files and discovers metric signatures using
+  [`duckdb_functions()`](https://duckdb.org/docs/current/sql/meta/duckdb_table_functions).
+  It generates `sql/data_profiling.sql`, a complete bundle of definitions and the batch entry point.
+  Metric formulas remain in their category files; do not edit the generated file.
+- Macros named `data_profiling_<metric ID>` with `()`, `(table_name)` or `(column_value)` parameters
+  automatically join the table-aggregate, table-metadata or per-column aggregate stage, respectively.
+  IDs use lowercase letters, digits and underscores, starting with a letter. The value/result helper names are reserved.
+  Column aggregates currently apply to every column type. Unsupported signatures and table macros fail generation;
+  type-specific, pair and multi-stage execution still require extending the generator.
 - `data_profiling_value(type, payload)` builds the common JSON tag. Complex payloads can use
   DuckDB's [JSON construction functions](https://duckdb.org/docs/2.0/data/json/creating_json).
 - `data_profiling_result(table_name, columns, metric, value, parameters := '{}'::JSON)` is the shared envelope constructor.
@@ -89,7 +97,7 @@ SELECT unnest(data_profiling_result(
 ```
 
 This example constructs a result; it does not compute a correlation.
-Additional [numeric, distribution, temporal and pair examples](./result-examples.json) are checked for SQL/JSON round trips.
+The protocol test checks nested typed values, exact numeric strings and ordered pair targets.
 
 ## Node transport
 
@@ -118,18 +126,3 @@ requires a new protocol version or a new metric ID; it is not a silent v1 change
 
 This draft replaces the earlier `column_name / metric / BIGINT value` prototype. Only `row_count`,
 `column_count` and `missing_count` are computed today. The other shapes are contracts and examples for future implementations.
-
-## Relationship to fg-data-profiling
-
-This is not fg's report schema. fg organizes its report into table summaries, variables and correlations;
-this library emits queryable metric rows and uses fg to check numerical results.
-
-| Implemented metric | fg reference field |
-| --- | --- |
-| `row_count`, `columns: []` | `table.n` |
-| `column_count`, `columns: []` | `table.n_var` |
-| `missing_count`, `columns: [name]` | `variables[name].n_missing` |
-
-The reference fixtures align Python missing values with SQL NULL. They do not assert equivalence between
-pandas missingness and native DuckDB NaN, nor between the future libraries' binning or correlation defaults.
-Compatibility with fg report JSON would be a separate adapter, not a different SQL result envelope.

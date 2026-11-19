@@ -2,7 +2,7 @@
 
 # Data Profiling 数据画像
 
-Data Profiling 是一个面向 DuckDB SQL 的数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
+Data Profiling 是一个用 DuckDB SQL 计算指标的 TypeScript 数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
 
 > [!NOTE]
 > 已实现 `row_count`、`column_count` 和逐列的 `missing_count`，其余指标和列选择仍在规划中。[结果协议 v1](./docs/result-protocol.md) 已定义标量、分布和列对结果的表达方式。
@@ -43,18 +43,15 @@ AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结
 | `parameters` | JSON 对象，记录实际生效的指标参数。 |
 | `value` | 带类型标签的 JSON，支持标量及递归的列表、对象。 |
 
-整数和精确小数以文本保留在带类型的值中，浮点数、特殊数值、时间、时长和未定义结果有明确编码。直方图边界、频数和分位点采用结构化值；列对也使用同样六列。详见[完整协议、兼容规则和各指标族的结构](./docs/result-protocol.md)、[协议示例](./docs/result-examples.json)及 [TypeScript 类型](./index.d.ts)。
+整数和精确小数以文本保留在带类型的值中，浮点数、特殊数值、时间、时长和未定义结果有明确编码。直方图边界、频数和分位点采用结构化值；列对也使用同样六列。详见[完整协议、兼容规则和各指标族的结构](./docs/result-protocol.md)、导出的 `ProfileResult` / `ProfileRow` TypeScript 类型。
 
 Node 驱动将 JSON 列返回为文本，按上例解析后得到 `ProfileResult`，无需强制转成 JavaScript `number`。
 
 ## DuckDB CLI
 
-按以下顺序加载协议辅助函数、分类指标和统一入口：
+加载构建生成的完整 SQL，其中已包含协议辅助函数、分类指标和统一入口：
 
 ```sql
-.read sql/result.sql
-.read sql/metrics/table.sql
-.read sql/metrics/missingness.sql
 .read sql/data_profiling.sql
 
 CREATE TEMP TABLE orders AS
@@ -82,42 +79,60 @@ sql/
   metrics/
     table.sql              # 表级指标，类内用注释块划分
     missingness.sql        # 列缺失指标
-  data_profiling.sql       # 批量执行和结果路由
-index.cjs                  # SQL 导出
-index.d.ts                 # 协议类型
+  data_profiling.sql       # 构建生成的完整 SQL，请勿手改
+src/
+  index.ts                 # SQL 导出
+  generate-sql.ts          # 发现指标并生成批量入口
+  types.ts                 # 协议类型
+dist/                      # 自动生成的 JavaScript 和类型声明
 docs/
   result-protocol.md
-  result-examples.json
 tests/
-  result.test.cjs
-  metrics/table.test.cjs
-  metrics/missingness.test.cjs
-  data-profiling.test.cjs
-  fixtures/                # 共用输入；各分类各自保存标答
-  generate-reference.py
+  result.test.ts
+  metrics/table.test.ts
+  metrics/missingness.test.ts
+  data-profiling.test.ts
+  generate-sql.test.ts      # 新指标自动接入和空表回归
+  fixture.ts               # 共用测试输入和连接准备
 ```
 
-分类函数负责指标计算和带类型的值。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`，不重写指标公式。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取 SQL 文件。
+分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `sql/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
+
+新增指标只需在现有分类文件中追加宏，或新建一个 `.sql` 分类文件，然后运行 `npm run build`。宏名使用 `data_profiling_<指标 ID>`，ID 为小写字母开头的小写字母、数字和下划线组合；`data_profiling_value` 和 `data_profiling_result` 为保留的协议辅助函数。参数名约定如下：
+
+| 宏参数 | 执行方式 | 结果目标 |
+| --- | --- | --- |
+| `()` | 与其他聚合一起扫描输入 | 表级 `[]` |
+| `(table_name)` | 传入表名读取元数据 | 表级 `[]` |
+| `(column_value)` | 对每列执行聚合 | 单列 `[列名]` |
+
+例如，在 `sql/metrics/missingness.sql` 中追加以下定义并构建，即可自动得到逐列的 `present_count`：
+
+```sql
+CREATE OR REPLACE MACRO data_profiling_present_count(column_value) AS
+    data_profiling_value('integer', count(column_value)::VARCHAR);
+```
+
+指标须返回协议规定的带类型值；逐列指标目前须适用于所有输入列类型。不支持的参数或表宏会使构建失败。自动接入发生在构建时；重新加载完整 SQL 后，新指标才会生效。仅向已有连接注册一个宏不会更新批量入口。
 
 结果协议能表达下方各指标族，无需改动外层六列。执行能力单独扩展：分布和列对可能需要分组、排序或额外阶段，文件、图像元数据和 ADF 可能需要扩展或执行适配，目前尚未实现。不要求所有指标强行共用一次扫描，性能用 EXPLAIN ANALYZE 和代表性数据验证。
 
-## 本地开发与标答测试
+## 本地开发
 
 使用 Node.js 22.13 或更高版本：
 
 ```sh
 npm install
+npm run build
 npm test
 npm pack
 ```
 
-`package-lock.json` 只在本地保留，已加入 Git 忽略规则。测试使用 Node 内置测试框架，`@duckdb/node-api` 2.0.0-r.1 仅作开发依赖。`npm pack` 生成可本地安装的压缩包，目前尚未发布。
+`package-lock.json` 只在本地保留，已加入 Git 忽略规则。`src/` 和测试均使用 TypeScript，严格类型检查后再运行 Node 内置测试框架。`@duckdb/node-api` 2.0.0-r.1 仅作开发依赖。
 
-每个 SQL 文件对应一个测试文件，各保留一个核心案例。`table.sql`、`missingness.sql` 分别对照自己的标答文件，标答由同一份输入实际运行 `fg-data-profiling 4.20.0` 生成。`result.sql` 验证公开协议示例，入口测试检查路由和列结构。协议示例只验证序列化，并不代表未来指标已实现。
+`npm run build` 将库编译到 `dist/`，生成类型声明及完整 SQL；`npm install`、`npm test` 和 `npm pack` 也会触发构建。修改指标后应一并保留重新生成的 `sql/data_profiling.sql`。发布包包含运行时编译产物、SQL 和协议文档，不包含测试、生成器或构建依赖。当前尚未发布到 npm。
 
-刷新指标标答时，在独立 Python 环境安装 `fg-data-profiling==4.20.0`，运行 `python tests/generate-reference.py`。脚本分别生成 `fixtures/table.json`、`fixtures/missingness.json`，记录包版本、配置和字段映射；接受更新前先检查差异。
-
-本协议与 fg 的报告 JSON 结构不同。fg 用来校验统计值：`table.n` 对应 `row_count`，`table.n_var` 对应 `column_count`，`variables.<column>.n_missing` 对应 `missing_count`。共用输入将 Python 缺失值映射为 SQL NULL，不据此认定 DuckDB NaN 与 pandas 缺失值口径一致。将来若要导出 fg 报告格式，应通过适配层转换，保持核心 SQL 协议稳定。
+测试覆盖表级统计、列缺失、结果协议、统一入口，以及新增指标自动发现、空表和特殊列名。必要的测试输入和预期值直接保留在测试源码中。
 
 ## 规划中的列选择
 

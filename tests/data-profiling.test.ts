@@ -1,7 +1,6 @@
-const assert = require('node:assert/strict');
-const { test } = require('node:test');
-const { openFixture } = require('./fixture.cjs');
-const input = require('./fixtures/input.json');
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { columns, openFixture } from './fixture';
 
 test('data_profiling.sql routes table and column results through protocol v1', async (t) => {
   const connection = await openFixture(t);
@@ -10,7 +9,7 @@ test('data_profiling.sql routes table and column results through protocol v1', a
   const rows = result.getRowObjectsJson();
   assert.deepEqual(rows.map(({ columns, metric }) => [columns, metric]), [
     [[], 'column_count'], [[], 'row_count'],
-    ...Object.keys(input.columns).sort().map((name) => [[name], 'missing_count']),
+    ...Object.keys(columns).sort().map((name) => [[name], 'missing_count']),
   ]);
   assert.ok(rows.every((row) => row.protocol_version === 1 && row.table_name === 'sample'));
 });
