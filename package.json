@@ -13,8 +13,7 @@
   "files": [
     "dist",
     "!dist/generate-sql.*",
-    "docs",
-    "sql"
+    "docs"
   ],
   "engines": {
     "node": ">=22.13.0"

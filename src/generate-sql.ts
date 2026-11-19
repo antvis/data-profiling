@@ -74,6 +74,6 @@ FROM (
 
 if (require.main === module) {
   generateProfilingSQL(readDefinitionsSQL())
-    .then((sql) => writeFileSync(join(__dirname, '..', 'sql', 'data_profiling.sql'), sql))
+    .then((sql) => writeFileSync(join(__dirname, 'data_profiling.sql'), sql))
     .catch((error: unknown) => { console.error(error); process.exitCode = 1; });
 }

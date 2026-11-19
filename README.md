@@ -49,10 +49,10 @@ The Node driver returns JSON columns as text; parsing them produces `ProfileResu
 
 ## DuckDB CLI
 
-Load the generated SQL bundle, which includes the protocol helpers, metric categories and public entry point:
+Run `npm run build` first, then load the generated SQL bundle, which includes the protocol helpers, metric categories and public entry point:
 
 ```sql
-.read sql/data_profiling.sql
+.read dist/data_profiling.sql
 
 CREATE TEMP TABLE orders AS
 SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, channel);
@@ -79,12 +79,11 @@ sql/
   metrics/
     table.sql              # Table metrics; comment blocks separate definitions
     missingness.sql        # Column missingness metrics
-  data_profiling.sql       # Generated SQL bundle; do not edit
 src/
   index.ts                 # SQL export
   generate-sql.ts          # Discover metrics and generate the batch entry point
   types.ts                 # Protocol types
-dist/                      # Generated JavaScript and declarations
+dist/                      # Generated JavaScript, declarations and SQL bundle; ignored by Git
 docs/
   result-protocol.md
 tests/
@@ -96,7 +95,7 @@ tests/
   fixture.ts               # Shared test input and connection setup
 ```
 
-Category functions own each metric's calculation and typed value. The build loads `sql/metrics/*.sql` in filename order, discovers metrics from DuckDB's macro catalog and generates `sql/data_profiling.sql` with all definitions and the batch entry point. That entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`. `row_count` and every column's `missing_count` share one input scan. Column names are recovered after aggregation so empty inputs retain their names. The npm module reads the generated bundle once when loaded and needs no build dependencies at runtime.
+Category functions own each metric's calculation and typed value. The build loads `sql/metrics/*.sql` in filename order, discovers metrics from DuckDB's macro catalog and generates `dist/data_profiling.sql` with all definitions and the batch entry point. That entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`. `row_count` and every column's `missing_count` share one input scan. Column names are recovered after aggregation so empty inputs retain their names. The npm module reads the generated bundle once when loaded and needs no build dependencies at runtime.
 
 To add a metric, append a macro to an existing category or add a new `.sql` category file, then run `npm run build`. Name it `data_profiling_<metric ID>`, with an ID starting with a lowercase letter and containing only lowercase letters, digits and underscores. `data_profiling_value` and `data_profiling_result` are reserved protocol helpers. Parameter names determine execution:
 
@@ -130,7 +129,7 @@ npm pack
 
 `package-lock.json` is local-only and ignored by Git. Both `src/` and the tests use TypeScript. Tests are type-checked before running with Node's built-in test runner; `@duckdb/node-api` 2.0.0-r.1 is a development dependency only.
 
-`npm run build` compiles the library into `dist/` and generates declarations and the SQL bundle. `npm install`, `npm test` and `npm pack` also trigger the build. Include the regenerated `sql/data_profiling.sql` when changing metrics. The package contains runtime compiled output, SQL and protocol documentation, excluding tests, the generator and build dependencies. It has not been published to npm.
+`npm run build` compiles the library into `dist/` and generates declarations and the SQL bundle. `npm install`, `npm test` and `npm pack` also trigger the build. Only `sql/result.sql` and `sql/metrics/*.sql` are maintained as SQL source. Generated files stay in `dist/` and are ignored by Git. The package contains compiled runtime output, the single SQL bundle and protocol documentation, excluding source SQL, tests, the generator and build dependencies. It has not been published to npm.
 
 Tests cover table statistics, column missingness, the result protocol, the public entry point, automatic metric discovery, empty inputs and unusual column names. Essential test data and expectations live directly in the test sources.
 

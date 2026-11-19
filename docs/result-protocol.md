@@ -73,7 +73,7 @@ not a claim that the corresponding computations have been implemented.
   returns `data_profiling_value('integer', count(*)::VARCHAR)`.
 - `npm run build` loads all `sql/metrics/*.sql` files and discovers metric signatures using
   [`duckdb_functions()`](https://duckdb.org/docs/current/sql/meta/duckdb_table_functions).
-  It generates `sql/data_profiling.sql`, a complete bundle of definitions and the batch entry point.
+  It generates `dist/data_profiling.sql`, a complete bundle of definitions and the batch entry point.
   Metric formulas remain in their category files; do not edit the generated file.
 - Macros named `data_profiling_<metric ID>` with `()`, `(table_name)` or `(column_value)` parameters
   automatically join the table-aggregate, table-metadata or per-column aggregate stage, respectively.

@@ -49,10 +49,10 @@ Node 驱动将 JSON 列返回为文本，按上例解析后得到 `ProfileResult
 
 ## DuckDB CLI
 
-加载构建生成的完整 SQL，其中已包含协议辅助函数、分类指标和统一入口：
+先运行 `npm run build`，再加载生成的完整 SQL，其中已包含协议辅助函数、分类指标和统一入口：
 
 ```sql
-.read sql/data_profiling.sql
+.read dist/data_profiling.sql
 
 CREATE TEMP TABLE orders AS
 SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, channel);
@@ -79,12 +79,11 @@ sql/
   metrics/
     table.sql              # 表级指标，类内用注释块划分
     missingness.sql        # 列缺失指标
-  data_profiling.sql       # 构建生成的完整 SQL，请勿手改
 src/
   index.ts                 # SQL 导出
   generate-sql.ts          # 发现指标并生成批量入口
   types.ts                 # 协议类型
-dist/                      # 自动生成的 JavaScript 和类型声明
+dist/                      # 构建生成的 JavaScript、类型声明和 SQL，不进 Git
 docs/
   result-protocol.md
 tests/
@@ -96,7 +95,7 @@ tests/
   fixture.ts               # 共用测试输入和连接准备
 ```
 
-分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `sql/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
+分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `dist/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
 
 新增指标只需在现有分类文件中追加宏，或新建一个 `.sql` 分类文件，然后运行 `npm run build`。宏名使用 `data_profiling_<指标 ID>`，ID 为小写字母开头的小写字母、数字和下划线组合；`data_profiling_value` 和 `data_profiling_result` 为保留的协议辅助函数。参数名约定如下：
 
@@ -130,7 +129,7 @@ npm pack
 
 `package-lock.json` 只在本地保留，已加入 Git 忽略规则。`src/` 和测试均使用 TypeScript，严格类型检查后再运行 Node 内置测试框架。`@duckdb/node-api` 2.0.0-r.1 仅作开发依赖。
 
-`npm run build` 将库编译到 `dist/`，生成类型声明及完整 SQL；`npm install`、`npm test` 和 `npm pack` 也会触发构建。修改指标后应一并保留重新生成的 `sql/data_profiling.sql`。发布包包含运行时编译产物、SQL 和协议文档，不包含测试、生成器或构建依赖。当前尚未发布到 npm。
+`npm run build` 将库编译到 `dist/`，生成类型声明及完整 SQL；`npm install`、`npm test` 和 `npm pack` 也会触发构建。SQL 源码只维护 `sql/result.sql` 和 `sql/metrics/*.sql`，生成文件全部放在 `dist/`，不进 Git。发布包包含运行时编译产物、唯一的完整 SQL 包和协议文档，不包含源 SQL、测试、生成器或构建依赖。当前尚未发布到 npm。
 
 测试覆盖表级统计、列缺失、结果协议、统一入口，以及新增指标自动发现、空表和特殊列名。必要的测试输入和预期值直接保留在测试源码中。
 
