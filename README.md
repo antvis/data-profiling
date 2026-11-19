@@ -4,9 +4,6 @@
 
 Data Profiling is a TypeScript library for profiling tabular data with DuckDB SQL, inspired by [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling). Its focus is on statistics you can query and reuse.
 
-> [!NOTE]
-> Implemented: `row_count`, `column_count` and per-column `missing_count`. Other metrics and column selection remain planned. [Result protocol v1](./docs/result-protocol.md) already defines scalar, distribution and pair representations.
-
 ## Quick start
 
 The npm package exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
@@ -60,15 +57,6 @@ SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, ch
 SELECT * FROM data_profiling('orders');
 ```
 
-| protocol_version | table_name | columns | metric | parameters | value |
-| --- | --- | --- | --- | --- | --- |
-| 1 | orders | [] | row_count | {} | {"type":"integer","value":"3"} |
-| 1 | orders | [] | column_count | {} | {"type":"integer","value":"2"} |
-| 1 | orders | [amount] | missing_count | {} | {"type":"integer","value":"1"} |
-| 1 | orders | [channel] | missing_count | {} | {"type":"integer","value":"1"} |
-
-`row_count` includes duplicates and NULL-containing rows. `column_count` reads column metadata. `missing_count` counts SQL NULL, including zero counts for empty inputs; empty strings, zero and DuckDB NaN are not NULL. Tables, views and schema-qualified names are supported. Missing tables raise DuckDB errors. Loading the SQL again replaces the macros in the current schema.
-
 `.read` is a CLI command. Other clients execute `dataProfilingSQL`, which includes every required SQL file.
 
 ## Organization and execution
@@ -95,7 +83,7 @@ tests/
   fixture.ts               # Shared test input and connection setup
 ```
 
-Category functions own each metric's calculation and typed value. The build loads `sql/metrics/*.sql` in filename order, discovers metrics from DuckDB's macro catalog and generates `dist/data_profiling.sql` with all definitions and the batch entry point. That entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`. `row_count` and every column's `missing_count` share one input scan. Column names are recovered after aggregation so empty inputs retain their names. The npm module reads the generated bundle once when loaded and needs no build dependencies at runtime.
+Category functions own each metric's calculation and typed value. The build loads `sql/metrics/*.sql` in filename order, discovers metrics from DuckDB's macro catalog and generates `dist/data_profiling.sql` with all definitions and the batch entry point. That entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`. Compatible aggregates share one input scan. Column names are recovered after aggregation so empty inputs retain their names. The npm module reads the generated bundle once when loaded and needs no build dependencies at runtime.
 
 To add a metric, append a macro to an existing category or add a new `.sql` category file, then run `npm run build`. Name it `data_profiling_<metric ID>`, with an ID starting with a lowercase letter and containing only lowercase letters, digits and underscores. `data_profiling_value` and `data_profiling_result` are reserved protocol helpers. Parameter names determine execution:
 
@@ -105,16 +93,9 @@ To add a metric, append a macro to an existing category or add a new `.sql` cate
 | `(table_name)` | Read metadata using the table reference | Table `[]` |
 | `(column_value)` | Aggregate each column | Single column `[name]` |
 
-For example, adding this definition to `sql/metrics/missingness.sql` and rebuilding automatically includes per-column `present_count` results:
-
-```sql
-CREATE OR REPLACE MACRO data_profiling_present_count(column_value) AS
-    data_profiling_value('integer', count(column_value)::VARCHAR);
-```
-
 Metrics must return protocol-compliant typed values; column metrics must currently work on every input column type. Unsupported signatures or table macros fail the build. Discovery happens at build time: reload the complete SQL bundle to activate new metrics. Registering a macro in an existing connection alone does not update the batch entry point.
 
-The protocol can represent every metric family listed below without changing its outer columns. Execution support is separate: distributions and pairs can require grouping/sorting or additional stages, while file/image metadata and ADF may need extensions or execution adapters. These capabilities are not implemented yet. Adding them does not require every metric to share one scan. Use EXPLAIN ANALYZE and representative data to verify performance.
+The protocol can represent every metric family listed below without changing its outer columns. Execution support is separate: distributions and pairs can require grouping/sorting or additional stages, while file/image metadata and ADF may need extensions or execution adapters. Adding them does not require every metric to share one scan. Use EXPLAIN ANALYZE and representative data to verify performance.
 
 ## Development
 
@@ -145,7 +126,7 @@ SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
 
 The **Importance** rating reflects each group's value for general-purpose profiling. Five stars mark the core metrics. Four stars are for common follow-up analyses, three for context-specific statistics, two for specialized analysis, and one for narrow domain needs.
 
-The tags describe the library's planned behavior for applicable input types. Only `row_count`, `column_count` and `missing_count` are implemented.
+The tags describe the library's planned behavior for applicable input types.
 
 - `default` includes the metric in the standard profile.
 - `minimal` includes the metric in the lighter profile. `minimal (text)` applies to text columns in that profile.

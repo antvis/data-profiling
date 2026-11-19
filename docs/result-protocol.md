@@ -69,8 +69,7 @@ not a claim that the corresponding computations have been implemented.
 
 ## Construction and execution
 
-- Category files own calculations and typed value encoding. For example, `data_profiling_row_count()`
-  returns `data_profiling_value('integer', count(*)::VARCHAR)`.
+- Category files own calculations and typed value encoding.
 - `npm run build` loads all `sql/metrics/*.sql` files and discovers metric signatures using
   [`duckdb_functions()`](https://duckdb.org/docs/current/sql/meta/duckdb_table_functions).
   It generates `dist/data_profiling.sql`, a complete bundle of definitions and the batch entry point.
@@ -123,6 +122,3 @@ Adding metrics, parameter options or documented optional fields inside structure
 Readers ignore unknown metric IDs and optional object fields, and reject unknown protocol versions.
 Changing outer columns, existing value meanings/types, column ordering or an existing metric's required payload shape
 requires a new protocol version or a new metric ID; it is not a silent v1 change.
-
-This draft replaces the earlier `column_name / metric / BIGINT value` prototype. Only `row_count`,
-`column_count` and `missing_count` are computed today. The other shapes are contracts and examples for future implementations.

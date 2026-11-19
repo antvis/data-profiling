@@ -4,9 +4,6 @@
 
 Data Profiling 是一个用 DuckDB SQL 计算指标的 TypeScript 数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
 
-> [!NOTE]
-> 已实现 `row_count`、`column_count` 和逐列的 `missing_count`，其余指标和列选择仍在规划中。[结果协议 v1](./docs/result-protocol.md) 已定义标量、分布和列对结果的表达方式。
-
 ## 快速开始
 
 npm 包向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
@@ -60,15 +57,6 @@ SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, ch
 SELECT * FROM data_profiling('orders');
 ```
 
-| protocol_version | table_name | columns | metric | parameters | value |
-| --- | --- | --- | --- | --- | --- |
-| 1 | orders | [] | row_count | {} | {"type":"integer","value":"3"} |
-| 1 | orders | [] | column_count | {} | {"type":"integer","value":"2"} |
-| 1 | orders | [amount] | missing_count | {} | {"type":"integer","value":"1"} |
-| 1 | orders | [channel] | missing_count | {} | {"type":"integer","value":"1"} |
-
-`row_count` 包含重复行和含 NULL 的行，`column_count` 读取列元数据。`missing_count` 统计 SQL NULL，空表每列返回零；空字符串、零和 DuckDB NaN 不算 NULL。支持表、视图和带 schema 的表名；表不存在时保留 DuckDB 报错。重复加载会替换当前 schema 中的同名宏。
-
 `.read` 是 CLI 命令，其他客户端执行 `dataProfilingSQL` 即可加载全部依赖。
 
 ## 目录组织与执行
@@ -95,7 +83,7 @@ tests/
   fixture.ts               # 共用测试输入和连接准备
 ```
 
-分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `dist/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。行数和所有列的缺失数共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
+分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `dist/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。兼容的聚合共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
 
 新增指标只需在现有分类文件中追加宏，或新建一个 `.sql` 分类文件，然后运行 `npm run build`。宏名使用 `data_profiling_<指标 ID>`，ID 为小写字母开头的小写字母、数字和下划线组合；`data_profiling_value` 和 `data_profiling_result` 为保留的协议辅助函数。参数名约定如下：
 
@@ -105,16 +93,9 @@ tests/
 | `(table_name)` | 传入表名读取元数据 | 表级 `[]` |
 | `(column_value)` | 对每列执行聚合 | 单列 `[列名]` |
 
-例如，在 `sql/metrics/missingness.sql` 中追加以下定义并构建，即可自动得到逐列的 `present_count`：
-
-```sql
-CREATE OR REPLACE MACRO data_profiling_present_count(column_value) AS
-    data_profiling_value('integer', count(column_value)::VARCHAR);
-```
-
 指标须返回协议规定的带类型值；逐列指标目前须适用于所有输入列类型。不支持的参数或表宏会使构建失败。自动接入发生在构建时；重新加载完整 SQL 后，新指标才会生效。仅向已有连接注册一个宏不会更新批量入口。
 
-结果协议能表达下方各指标族，无需改动外层六列。执行能力单独扩展：分布和列对可能需要分组、排序或额外阶段，文件、图像元数据和 ADF 可能需要扩展或执行适配，目前尚未实现。不要求所有指标强行共用一次扫描，性能用 EXPLAIN ANALYZE 和代表性数据验证。
+结果协议能表达下方各指标族，无需改动外层六列。执行能力单独扩展：分布和列对可能需要分组、排序或额外阶段，文件、图像元数据和 ADF 可能需要扩展或执行适配。不要求所有指标强行共用一次扫描，性能用 EXPLAIN ANALYZE 和代表性数据验证。
 
 ## 本地开发
 
@@ -145,7 +126,7 @@ SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
 
 **重要性**按各组统计对通用画像的价值评估。五星是核心指标，四星常用于进一步排查，三星视场景使用，两星用于专项分析，一星适用于少数领域。
 
-计算标记说明库针对适用输入类型的拟议行为。目前只有 `row_count`、`column_count` 和 `missing_count` 已实现。
+计算标记说明库针对适用输入类型的拟议行为。
 
 - `default` 表示默认画像会计算该指标。
 - `minimal` 表示最小画像也会计算该指标。`minimal（文本列）` 表示仅对文本列计算。
