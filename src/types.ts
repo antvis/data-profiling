@@ -3,6 +3,7 @@ export type MetricValue =
   | { type: 'number'; value: number | 'NaN' | 'Infinity' | '-Infinity' }
   | { type: 'boolean'; value: boolean }
   | { type: 'string' | 'date' | 'timestamp' | 'timestamptz'; value: string }
+  | { type: 'duration'; value: { amount: string; unit: 'nanosecond' } }
   | { type: 'list'; value: MetricValue[] }
   | { type: 'object'; value: { [key: string]: MetricValue } }
   | { type: 'null'; value: null };
@@ -12,6 +13,6 @@ export interface ProfileResult {
   table_name: string;
   columns: string[];
   metric: string;
-  parameters: Record<string, number>;
+  parameters: Record<string, unknown>;
   value: MetricValue;
 }

@@ -1,6 +1,6 @@
 {
   "name": "data_profiling",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Exact DuckDB profiling with schema-directed native aggregate plans",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,17 +11,21 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "python-requirements.txt",
+    "docs/fg-metrics.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist', {recursive: true, force: true})\" && tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist', {recursive: true, force: true})\" && tsc && node -e \"require('node:fs').copyFileSync('src/fg_worker.py', 'dist/fg_worker.py')\"",
     "prepare": "npm run build",
     "pretest": "node -e \"require('node:fs').rmSync('.test-dist', {recursive: true, force: true})\"",
     "test": "npm run build && tsc -p tsconfig.test.json && node --test .test-dist/tests/*.test.js",
-    "bench": "npm run build && node benchmarks/profile.mjs"
+    "bench": "npm run build && node benchmarks/profile.mjs",
+    "bench:fg": "npm run build && node benchmarks/fg.mjs"
   },
   "devDependencies": {
     "@duckdb/node-api": "2.0.0-r.1",

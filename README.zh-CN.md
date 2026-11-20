@@ -4,7 +4,7 @@
 
 按已知 schema 编译 DuckDB 原生画像计划。复用调用方连接，批量计算所需指标，只将统计结果传回 JavaScript。
 
-唯一运行时入口是 `createProfilingPlan`。没有宏注册、SQL 文件加载或运行时 npm 依赖。
+`createProfilingPlan` 是原生 SQL 入口；`profileFG` 支持 FG 的完整统计指标族，包含可选的文件、图像和时序分析。原生执行无需宏注册和运行时 npm 依赖。
 
 ## 使用
 
@@ -53,6 +53,39 @@ const plan = createProfilingPlan('orders', columns, {
 
 `top_values.limit` 须为非负的 JavaScript 安全整数，`maxDistinctRatio` 须在 0 到 1 之间。未知指标、参数和重复列名会在执行前被拒绝。
 
+## FG 指标
+
+`profileFG` 支持 149 个指标 ID，包含现有 15 项。默认使用完整目录，也可通过 `options.metrics` 选择所需统计。详见[已实现指标及执行要求](./docs/fg-metrics.md)。
+
+```ts
+import { profileFG } from 'data_profiling';
+
+const results = await profileFG(connection, 'events', columns, {
+  metrics: ['row_count', 'present_count', 'missing_rate',
+    'variance_samp', 'singleton_count', 'pearson_r'],
+});
+```
+
+以上指标全部在 DuckDB 内执行。普通数值分位数、直方图也在原生 SQL 中执行。大整数/小数精确分位、p 值、Unicode、URL/路径、图像和时序算法使用可选的 Python worker。将依赖安装在隔离环境中：
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r python-requirements.txt
+```
+
+```ts
+const results = await profileFG(connection, 'events', columns, {
+  python: '.venv/bin/python',
+  types: { message: 'text', link: 'url', attachment: 'file',
+    picture: 'image', measurement: 'timeseries' },
+  timeIndex: 'observed_at',
+});
+```
+
+文件、图像、URL 和路径列须显式指定角色。有序指标需要 `orderBy` 或 `timeIndex`，时序指标需要 `timeIndex`；未配置的可选角色会跳过。列类型来自传入 schema，不扫描数据猜测类型。FG 模式将浮点 NaN 计为缺失，数值边界保留无穷值；现有 AVA 默认口径保持不变。
+
+仅将分组后的值及非 SQL 算法必需的列导出到临时 Parquet。同一路径每次请求只读取一次。Python worker 会复用已加载算法，空闲 30 秒后退出；每次请求重新计算统计和文件元数据。成功和失败都会清理临时文件。需要各阶段共享一致快照时，使用调用方事务。
+
 ## 执行与内存
 
 类型判断和参数验证只在编译计划时进行。DuckDB 直接执行原生聚合，重复聚合复用状态；高频查询使用分组和 Top-N。求和不物化整列列表。需要轻量画像时，显式选择计数、边界、均值、求和、标准差和长度等流式指标。
@@ -70,9 +103,10 @@ npm install
 npm test
 node examples/node.mjs
 npm run bench -- 200000
+FG_PYTHON=.venv/bin/python npm run bench:fg -- 200000
 npm pack
 ```
 
-源码仅有原生计划编译、结果类型及公共导出；测试覆盖计算口径、精度、空表、参数、预编译复用和受限内存。基准覆盖混合表、唯一字符串、宽数值表，以及 16 MB 限制下的 500 万行求和。基准是本机内存表测量，不包含文件或网络 I/O。
+测试覆盖原生计算口径、精度、空表、参数、预编译复用、受限内存及全部 FG 指标族。使用 `FG_PYTHON=.venv/bin/python npm test` 包含专项算法测试；运行 `node examples/fg.mjs .venv/bin/python` 查看 FG 示例。基准覆盖混合表、唯一字符串、宽数值表，以及 16 MB 限制下的 500 万行求和。基准是本机内存表测量，不包含文件或网络 I/O。
 
-0.2.0 仅提供原生计划入口。旧的 SQL 宏、SQL 内 JSON 输出及原子指标函数已移除。
+旧的 SQL 宏、SQL 内 JSON 输出及原子指标函数继续移除。0.3 新增 FG 执行器，保留原生计划 API 及其默认行为。

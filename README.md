@@ -4,7 +4,7 @@
 
 Compile schema-directed DuckDB profiling plans. Reuse the caller's connection, batch the requested aggregates and return only statistics to JavaScript.
 
-The only runtime entry point is `createProfilingPlan`. No macro registration, SQL file loading or runtime npm dependencies are required.
+`createProfilingPlan` is the native SQL entry point. `profileFG` adds FG’s complete statistical families, including optional file, image and time-series analysis. Native execution requires no macro registration or runtime npm dependencies.
 
 ## Usage
 
@@ -53,6 +53,39 @@ Each result contains `protocol_version`, `table_name`, `columns`, `metric`, `par
 
 `top_values.limit` must be a non-negative JavaScript-safe integer; `maxDistinctRatio` must be between 0 and 1. Unknown metrics/options and duplicate column names are rejected before execution.
 
+## FG metrics
+
+`profileFG` supports 149 metric IDs, including the existing 15. It defaults to the complete catalog; choose `options.metrics` to run only what you need. See [the implemented catalog and execution requirements](./docs/fg-metrics.md).
+
+```ts
+import { profileFG } from 'data_profiling';
+
+const results = await profileFG(connection, 'events', columns, {
+  metrics: ['row_count', 'present_count', 'missing_rate',
+    'variance_samp', 'singleton_count', 'pearson_r'],
+});
+```
+
+These metrics run entirely in DuckDB. Ordinary numeric quantiles/histograms also run natively. Exact large-integer/decimal quantiles, p-values, Unicode, URL/path, image and time-series algorithms use an optional Python worker. Install its dependencies in an isolated environment:
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r python-requirements.txt
+```
+
+```ts
+const results = await profileFG(connection, 'events', columns, {
+  python: '.venv/bin/python',
+  types: { message: 'text', link: 'url', attachment: 'file',
+    picture: 'image', measurement: 'timeseries' },
+  timeIndex: 'observed_at',
+});
+```
+
+File/image/URL/path roles are explicit. Ordered metrics require `orderBy` or `timeIndex`; time-series metrics require `timeIndex`. Unassigned optional roles are skipped. Types come from the supplied schema, without scanning to guess types. FG mode treats floating NaN as missing and retains infinities in numeric bounds; the AVA default remains unchanged.
+
+Only grouped values and the columns needed by non-SQL algorithms are exported to temporary Parquet. Repeated paths are read once per request. Python workers retain imports for reuse and exit after 30 seconds idle; statistics and file metadata are recalculated on every request. Temporary exports are removed on success and failure. Use the caller’s transaction when a consistent snapshot across stages is needed.
+
 ## Execution and memory
 
 Type selection and validation happen when compiling the plan. DuckDB executes native aggregates and reuses compatible states; frequencies use grouping and Top-N. Sums do not materialize full-column lists. For a lightweight profile, explicitly select streaming metrics such as counts, bounds, means, sums, standard deviations and lengths.
@@ -70,9 +103,10 @@ npm install
 npm test
 node examples/node.mjs
 npm run bench -- 200000
+FG_PYTHON=.venv/bin/python npm run bench:fg -- 200000
 npm pack
 ```
 
-Source consists of native plan compilation, result types and public exports. Tests cover calculations, precision, empty inputs, validation, statement reuse and constrained memory. Benchmarks cover mixed data, unique strings, wider numeric tables and a five-million-row sum under a 16 MB limit. Timings are local in-memory measurements and exclude file/network I/O.
+Tests cover native calculations, precision, empty inputs, validation, statement reuse, constrained memory and every FG metric family. Set `FG_PYTHON=.venv/bin/python npm test` to include optional algorithm tests. Run `node examples/fg.mjs .venv/bin/python` for a complete FG example. Benchmarks cover mixed data, unique strings, wider numeric tables and a five-million-row sum under a 16 MB limit. Timings are local in-memory measurements and exclude file/network I/O.
 
-Version 0.2.0 exposes only the native plan API. Legacy SQL macros, SQL-side JSON transport and individual metric functions have been removed.
+Legacy SQL macros, SQL-side JSON transport and individual metric functions remain removed. Version 0.3 adds the FG executor while retaining the original native plan API and defaults.
