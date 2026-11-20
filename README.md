@@ -34,6 +34,8 @@ AVA already has the column schema and passes it directly to `createProfilingPlan
 
 Supply `options.metrics` to select IDs or configurations such as `{ id: 'top_values', limit: 10, maxDistinctRatio: 1 }`. The last configuration for an ID wins. Omitted metrics mean all 15 built-ins; `[]` means no statistics. The column list can be a subset of the known schema. Identifiers are quoted and metric options are validated before execution. Rebuild the plan if the schema changes.
 
+For a lightweight profile, select `row_count`, `column_count`, `null_count`, `missing_count`, `min`, `max`, `mean`, `stddev`, `min_length` and `max_length` through `options.metrics`. These remain streaming native aggregates; `sum` can also be included without collecting a full-column list. This uses the same compiler as the full profile, rather than a separate fast macro.
+
 The plan contains no cached statistics. For repeated computations on the same schema, reuse `plan.sql` or prepare it with `connection.prepare(plan.sql)` and release the statement with `destroySync()` when finished. Each execution reads the current data.
 
 `createProfilingSQL(tableName, columns, options?)` generates the same native aggregates but formats the six-column protocol in SQL; parse its `parameters` and `value` JSON fields as described below. It is useful for SQL-oriented consumers. The original `dataProfilingSQL` bundle and `data_profiling(table_name)` remain compatible, including custom discovered macros; their generic type handling is slower. The native compiler supports the built-in metrics listed below.
@@ -41,8 +43,7 @@ The plan contains no cached statistics. For repeated computations on the same sc
 Native sums stream without an extra full-column list. Exact distinct counts and native medians still require memory proportional to their data. No approximate counts, sampling or result caches are introduced. Run the equality-checked benchmark with:
 
 ```sh
-npm run build
-node benchmarks/native.mjs 200000
+npm run bench -- 200000
 ```
 
 It compares the generic macros, native plans, SQL JSON transport and prepared native plans, including unique strings, wider numeric tables and a five-million-row sum under a 16 MB memory limit.

@@ -34,6 +34,8 @@ Node.js 优先使用 `createProfilingPlan(tableName, columns, options?)`。它�
 
 通过 `options.metrics` 选择 ID 或参数配置，例如 `{ id: 'top_values', limit: 10, maxDistinctRatio: 1 }`。相同 ID 以最后一项配置为准。省略时计算全部 15 个内置指标，`[]` 表示不计算统计。列列表可以是已有 schema 的子集。列名会安全引用，指标参数在执行前验证。schema 变化后须重新生成计划。
 
+轻量画像可通过 `options.metrics` 选择 `row_count`、`column_count`、`null_count`、`missing_count`、`min`、`max`、`mean`、`stddev`、`min_length` 和 `max_length`。这些均采用流式原生聚合；也可加入 `sum`，不会额外收集整列列表。轻量和完整画像共用同一个编译器，无需另建 fast 宏。
+
 计划不缓存统计结果。重复计算同一 schema 时，可以复用 `plan.sql`，或用 `connection.prepare(plan.sql)` 预编译，用完后调用 `destroySync()` 释放语句。每次执行都读取当前数据。
 
 `createProfilingSQL(tableName, columns, options?)` 使用相同的原生聚合，在 SQL 内封装外层六列，适合直接消费 SQL 结果的调用方；其 `parameters` 和 `value` 按下文解析。原有 `dataProfilingSQL` 和 `data_profiling(table_name)` 保留兼容，包括自动发现的自定义宏，但通用类型处理开销较高。原生编译器支持下方列出的内置指标。
@@ -41,8 +43,7 @@ Node.js 优先使用 `createProfilingPlan(tableName, columns, options?)`。它�
 原生总和采用流式聚合，不额外物化整列列表；精确去重和原生中位数仍需要相应内存。没有使用近似计数、采样或统计结果缓存。可运行带结果一致性断言的基准：
 
 ```sh
-npm run build
-node benchmarks/native.mjs 200000
+npm run bench -- 200000
 ```
 
 基准比较通用宏、原生计划、SQL JSON 输出和预编译原生计划，覆盖唯一字符串、较宽数值表，以及在 16 MB 内存限制下计算 500 万行总和。

@@ -7,6 +7,18 @@ const rows = Number(process.argv[2] ?? 200000);
 assert.ok(Number.isSafeInteger(rows) && rows > 0, 'row count must be a positive safe integer');
 const defaults = ['row_count', 'null_count', 'distinct_count', 'top_values', 'min', 'max', 'mean'];
 const all = [...defaults, 'duplicate_count', 'min_length', 'max_length', 'sum', 'stddev', 'median'];
+const streaming = [
+  'row_count',
+  'column_count',
+  'null_count',
+  'missing_count',
+  'min',
+  'max',
+  'mean',
+  'stddev',
+  'min_length',
+  'max_length',
+];
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const quote = (value) => `'${value.replaceAll("'", "''")}'`;
 const identifier = (value) => `"${value.replaceAll('"', '""')}"`;
@@ -28,6 +40,7 @@ for (const [name, projection] of [
     for (const [mode, metrics] of [
       ['default', defaults],
       ['all', all],
+      ['streaming', streaming],
       ['sum', ['sum']],
     ]) {
       const started = performance.now();
@@ -36,7 +49,8 @@ for (const [name, projection] of [
       const protocolSQL = createProfilingSQL('input', columns, { metrics });
       const macroSQL = `SELECT ${plan.metrics
         .map((metric, index) => {
-          const args = metric.column ? [identifier(metric.column.name)] : [];
+          const args =
+            metric.metric === 'column_count' ? [quote('input')] : metric.column ? [identifier(metric.column.name)] : [];
           if (metric.metric === 'top_values') args.push(`${quote(JSON.stringify(metric.parameters))}::JSON`);
           return `data_profiling_${metric.metric}(${args.join(', ')}) AS b${index}`;
         })

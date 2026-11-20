@@ -104,6 +104,37 @@ test('native plans reject missing or lossy transport values', () => {
   });
 });
 
+test('lightweight selection preserves exact results and allows streaming sums', async (t) => {
+  const connection = await openFixture(t);
+  const metrics = [
+    'row_count',
+    'column_count',
+    'null_count',
+    'missing_count',
+    'min',
+    'max',
+    'mean',
+    'stddev',
+    'min_length',
+    'max_length',
+    'sum',
+  ];
+  const plan = createProfilingPlan(
+    'sample',
+    Object.entries(columns).map(([name, type]) => ({ name, type })),
+    { metrics }
+  );
+  assert.doesNotMatch(plan.sql, /DISTINCT|list\(|histogram\(|median\(|data_profiling_/i);
+  const rows = plan.decode((await connection.runAndReadAll(plan.sql)).getRowObjectsJson()[0]);
+  const full = decode(
+    (await connection.runAndReadAll("SELECT * FROM data_profiling('sample')")).getRowObjectsJson() as ProfileRow[]
+  ).filter(({ metric }) => metrics.includes(metric));
+  const sort = (values: typeof rows) =>
+    values.sort((a, b) => JSON.stringify([a.columns, a.metric]).localeCompare(JSON.stringify([b.columns, b.metric])));
+  assert.deepEqual(sort(rows), sort(full));
+  assert.deepEqual(new Set(rows.map(({ metric }) => metric)), new Set(metrics));
+});
+
 test('native sum streams large inputs within a small memory budget without registering macros', async (t) => {
   const instance = await DuckDBInstance.create(':memory:', { threads: '1', memory_limit: '16MB' });
   const connection = await instance.connect();
