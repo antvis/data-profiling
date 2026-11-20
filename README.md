@@ -67,6 +67,9 @@ sql/
   metrics/
     table.sql              # Table metrics; comment blocks separate definitions
     missingness.sql        # Column missingness metrics
+    cardinality.sql        # Exact distinct counts
+    frequency.sql          # Top category frequencies
+    numeric.sql            # Numeric/temporal bounds and numeric means
 src/
   index.ts                 # SQL export
   generate-sql.ts          # Discover metrics and generate the batch entry point
@@ -93,7 +96,7 @@ To add a metric, append a macro to an existing category or add a new `.sql` cate
 | `(table_name)` | Read metadata using the table reference | Table `[]` |
 | `(column_value)` | Aggregate each column | Single column `[name]` |
 
-Metrics must return protocol-compliant typed values; column metrics must currently work on every input column type. Unsupported signatures or table macros fail the build. Discovery happens at build time: reload the complete SQL bundle to activate new metrics. Registering a macro in an existing connection alone does not update the batch entry point.
+Metrics return protocol-compliant typed values, or SQL NULL to skip an unsupported target. An undefined result on a supported target returns the typed `null` value instead. Column macros must bind on every input type; the built-in metrics check types internally. Optional `_data_profiling_parameters_<metric ID>()` helpers supply the effective parameter object; otherwise it is `{}`. Internal `_data_profiling_*` helpers are not discovered as metrics. Unsupported signatures or table macros fail the build. Discovery happens at build time: reload the complete SQL bundle to activate new metrics. Registering a macro in an existing connection alone does not update the batch entry point.
 
 The protocol can represent every metric family listed below without changing its outer columns. Execution support is separate: distributions and pairs can require grouping/sorting or additional stages, while file/image metadata and ADF may need extensions or execution adapters. Adding them does not require every metric to share one scan. Use EXPLAIN ANALYZE and representative data to verify performance.
 
@@ -112,7 +115,27 @@ npm pack
 
 `npm run build` compiles the library into `dist/` and generates declarations and the SQL bundle. `npm install`, `npm test` and `npm pack` also trigger the build. Only `sql/result.sql` and `sql/metrics/*.sql` are maintained as SQL source. Generated files stay in `dist/` and are ignored by Git. The package contains compiled runtime output, the single SQL bundle and protocol documentation, excluding source SQL, tests, the generator and build dependencies. It has not been published to npm.
 
-Tests cover table statistics, column missingness, the result protocol, the public entry point, automatic metric discovery, empty inputs and unusual column names. Essential test data and expectations live directly in the test sources.
+Tests cover all implemented metrics, type eligibility, empty/all-NULL inputs, non-finite numbers, exact numeric and temporal bounds, category ordering/truncation, the result protocol and automatic metric discovery. Essential test data and expectations live directly in the test sources.
+
+## Implemented metrics
+
+`data_profiling(table_name)` computes all seven AVA default metrics, plus the existing `column_count` and `missing_count` metrics:
+
+| ID | Target | Calculation |
+| --- | --- | --- |
+| `row_count` | Table | All rows, including rows containing NULL. |
+| `column_count` | Table | Number of columns, including on empty inputs. |
+| `null_count`, `missing_count` | Every column | SQL NULL count; empty strings, zero and NaN are not NULL. Both IDs remain available. |
+| `distinct_count` | Numeric, string, Boolean, date/timestamp | Exact number of distinct non-NULL values. Includes non-finite values. |
+| `top_values` | String, Boolean | Up to 3 non-NULL values by count descending, then native value ascending. Omitted when distinct count / total row count exceeds 0.5. |
+| `min`, `max` | Numeric, date/timestamp | Bounds over finite values. Integers/decimals retain exact strings; dates/timestamps retain native precision. |
+| `mean` | Numeric | Arithmetic mean of finite values, returned as a floating-point `number`. |
+
+String columns include DuckDB UUID and ENUM types. Unsupported types receive only the NULL counts. Empty or all-NULL eligible columns return zero counts, empty frequency entries and typed `null` bounds/means.
+
+`top_values` records the fixed AVA defaults `{ "limit": 3, "maxDistinctRatio": 0.5 }` in `parameters`. Its typed `object` contains an `entries` list of `{ value, count }` objects and a `truncated` Boolean; every nested field uses the result protocol's typed values. `truncated` is true when eligible categories exceed the limit. The denominator includes NULL rows. These defaults are not configurable through the public entry point yet.
+
+Results use this library's protocol: temporal bounds are ISO strings rather than AVA's Unix milliseconds, and exact counts are integer strings rather than JavaScript numbers. Consumers adapt these representations when integrating with AVA.
 
 ## Planned column selection
 

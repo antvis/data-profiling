@@ -33,7 +33,8 @@ test('new macros in existing and new category files join the profile automatical
     const result = await connection.runAndReadAll(
       'SELECT * FROM data_profiling(?) ORDER BY metric, columns', [table],
     );
-    const rows = result.getRowObjectsJson();
+    const rows = result.getRowObjectsJson().filter(({ metric }) =>
+      ['column_count', 'missing_count', 'present_count', 'row_count', 'twice_row_count'].includes(metric as string));
     assert.ok(rows.every((row) => row.protocol_version === 1 && row.table_name === table && row.parameters === '{}'));
     assert.deepEqual(rows.map(({ columns, metric, value }) => [columns, metric, JSON.parse(value as string)]), [
       [[], 'column_count', { type: 'integer', value: '2' }],
