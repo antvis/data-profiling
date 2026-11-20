@@ -38,22 +38,26 @@ test('data_profiling.sql routes table and column results through protocol v1', a
   ]);
   assert.ok(rows.every((row) => row.protocol_version === 1 && row.table_name === 'sample'));
   assert.deepEqual(columnMetrics(rows, 'amount'), {
-    distinct_count: integer('3'), max: number(120), mean: number(80), min: number(0),
+    distinct_count: integer('3'), duplicate_count: integer('1'), max: number(120), mean: number(80), min: number(0),
+    sum: number(320), median: number(100), stddev: number(Math.sqrt(3200)),
     missing_count: integer('1'), null_count: integer('1'),
   });
   assert.deepEqual(columnMetrics(rows, 'complete'), {
-    distinct_count: integer('5'), max: integer('5'), mean: number(3), min: integer('1'),
+    distinct_count: integer('5'), duplicate_count: integer('0'), max: integer('5'), mean: number(3), min: integer('1'),
+    sum: integer('15'), median: number(3), stddev: number(Math.sqrt(2.5)),
     missing_count: integer('0'), null_count: integer('0'),
   });
   assert.deepEqual(columnMetrics(rows, 'channel'), {
-    distinct_count: integer('3'), missing_count: integer('1'), null_count: integer('1'),
+    distinct_count: integer('3'), duplicate_count: integer('1'), missing_count: integer('1'), null_count: integer('1'),
+    min_length: integer('0'), max_length: integer('5'),
   });
   assert.deepEqual(columnMetrics(rows, 'approved'), {
-    distinct_count: integer('2'), missing_count: integer('1'), null_count: integer('1'),
+    distinct_count: integer('2'), duplicate_count: integer('2'), missing_count: integer('1'), null_count: integer('1'),
     top_values: frequencies([[false, '2'], [true, '2']]),
   });
   assert.deepEqual(columnMetrics(rows, 'empty'), {
-    distinct_count: integer('0'), missing_count: integer('5'), null_count: integer('5'), top_values: frequencies([]),
+    distinct_count: integer('0'), duplicate_count: integer('0'), missing_count: integer('5'), null_count: integer('5'),
+    top_values: frequencies([]), min_length: missing, max_length: missing,
   });
   assert.ok(rows.every((row) => JSON.stringify(row.parameters) === JSON.stringify(
     row.metric === 'top_values' ? { limit: 3, maxDistinctRatio: 0.5 } : {},
@@ -72,10 +76,17 @@ test('default metrics retain supported targets and undefined values on empty or 
     const rows = await profile(connection, table);
     const count = table === 'empty_input' ? '0' : '1';
     assert.deepEqual(rows.find((row) => row.metric === 'row_count')?.value, integer(count));
-    const counts = { distinct_count: integer('0'), missing_count: integer(count), null_count: integer(count) };
-    assert.deepEqual(columnMetrics(rows, 'n'), { ...counts, min: missing, max: missing, mean: missing });
+    const counts = {
+      distinct_count: integer('0'), duplicate_count: integer('0'), missing_count: integer(count), null_count: integer(count),
+    };
+    assert.deepEqual(columnMetrics(rows, 'n'), {
+      ...counts, min: missing, max: missing, mean: missing, sum: missing, median: missing, stddev: missing,
+    });
     assert.deepEqual(columnMetrics(rows, 'd'), { ...counts, min: missing, max: missing });
-    for (const name of ['s', 'b']) assert.deepEqual(columnMetrics(rows, name), { ...counts, top_values: frequencies([]) });
+    assert.deepEqual(columnMetrics(rows, 's'), {
+      ...counts, top_values: frequencies([]), min_length: missing, max_length: missing,
+    });
+    assert.deepEqual(columnMetrics(rows, 'b'), { ...counts, top_values: frequencies([]) });
   }
 });
 
@@ -106,15 +117,21 @@ test('numeric and temporal bounds preserve precision and ignore non-finite obser
     const metrics = columnMetrics(rows, name);
     assert.deepEqual(metrics.min, value);
     assert.deepEqual(metrics.max, value);
+    if (['i', 'd'].includes(name)) {
+      assert.deepEqual(metrics.sum, value);
+      assert.deepEqual(metrics.stddev, missing);
+    }
+    if (name === 'd') assert.deepEqual(metrics.median, value);
     if (['day', 'distant_day', 'ns', 'tz'].includes(name)) assert.ok(!('mean' in metrics));
   }
   const special = await profile(connection, 'special');
   assert.deepEqual(columnMetrics(special, 'n'), {
-    distinct_count: integer('4'), missing_count: integer('1'), null_count: integer('1'),
+    distinct_count: integer('4'), duplicate_count: integer('0'), missing_count: integer('1'), null_count: integer('1'),
     min: number(2), max: number(2), mean: number(2),
+    sum: number(2), median: number(2), stddev: missing,
   });
   assert.deepEqual(columnMetrics(special, 'd'), {
-    distinct_count: integer('3'), missing_count: integer('2'), null_count: integer('2'),
+    distinct_count: integer('3'), duplicate_count: integer('0'), missing_count: integer('2'), null_count: integer('2'),
     min: { type: 'date', value: '2026-11-20' }, max: { type: 'date', value: '2026-11-20' },
   });
 });
@@ -137,16 +154,66 @@ test('top values handle ties, truncation, the cardinality threshold and native c
   assert.ok(!('top_values' in columnMetrics(await profile(connection, 'categories'), 's')));
 });
 
-test('unsupported types only receive NULL counts and cannot break scalar metrics', async (t) => {
+test('unsupported types receive NULL and duplicate counts without breaking scalar metrics', async (t) => {
   const connection = await openFixture(t);
   await connection.run(`CREATE TABLE complex AS SELECT
     [1, 2] AS list, [1]::INTEGER[1] AS array, {a: 1} AS struct,
     map(['a'], [1]) AS map, 'x'::BLOB AS blob, '1'::JSON AS json,
     INTERVAL '1 day' AS duration, TIME '12:00:00' AS time`);
   const rows = await profile(connection, 'complex');
-  assert.equal(rows.length, 18);
+  assert.equal(rows.length, 26);
   for (const row of rows.filter((row) => row.columns.length)) {
-    assert.ok(['missing_count', 'null_count'].includes(row.metric));
+    assert.ok(['missing_count', 'null_count', 'duplicate_count'].includes(row.metric));
     assert.deepEqual(row.value, integer('0'));
+  }
+});
+
+test('string lengths count Unicode characters, empty strings and trailing spaces', async (t) => {
+  const connection = await openFixture(t);
+  const result = await connection.runAndReadAll(`
+    SELECT data_profiling_min_length(v) AS min, data_profiling_max_length(v) AS max
+    FROM (VALUES ('😀'), ('中文 '), (''), (NULL)) t(v)
+  `);
+  const row = result.getRowObjectsJson()[0];
+  assert.deepEqual(JSON.parse(row.min as string), integer('0'));
+  assert.deepEqual(JSON.parse(row.max as string), integer('3'));
+});
+
+test('numeric aggregates retain native decimal median rounding and exact sums', async (t) => {
+  const connection = await openFixture(t);
+  await connection.run(`CREATE TABLE decimal_input AS SELECT * FROM (VALUES
+    (0.00::DECIMAL(38,2)), (0.01::DECIMAL(38,2)), (NULL)) t(v)`);
+  const metrics = columnMetrics(await profile(connection, 'decimal_input'), 'v');
+  assert.deepEqual(metrics.sum, { type: 'decimal', value: '0.01' });
+  assert.deepEqual(metrics.median, { type: 'decimal', value: '0.00' });
+  assert.equal(metrics.stddev.type, 'number');
+  if (metrics.stddev.type === 'number') assert.ok(Math.abs(Number(metrics.stddev.value) - Math.sqrt(0.00005)) < 1e-15);
+  await connection.run(`CREATE TABLE no_finite AS SELECT * FROM (VALUES
+    ('NaN'::DOUBLE), ('Infinity'::DOUBLE), ('-Infinity'::DOUBLE)) t(v)`);
+  const invalid = columnMetrics(await profile(connection, 'no_finite'), 'v');
+  for (const metric of ['min', 'max', 'mean', 'sum', 'stddev', 'median']) assert.deepEqual(invalid[metric], missing);
+});
+
+test('top values support AVA options and reject invalid parameters', async (t) => {
+  const connection = await openFixture(t);
+  for (const [parameters, expected] of [
+    [{ limit: 2, maxDistinctRatio: 1 }, frequencies([['web', '2'], ['', '1']], true)],
+    [{ limit: 0, maxDistinctRatio: 1 }, frequencies([], true)],
+    [{ limit: Number.MAX_SAFE_INTEGER, maxDistinctRatio: 1 }, frequencies([['web', '2'], ['', '1'], ['store', '1']])],
+    [{ maxDistinctRatio: 0 }, null],
+  ] as const) {
+    const result = await connection.runAndReadAll(
+      'SELECT data_profiling_top_values(channel, ?::JSON) AS value FROM sample', [JSON.stringify(parameters)],
+    );
+    const raw = result.getRowObjectsJson()[0].value;
+    assert.deepEqual(raw == null ? null : JSON.parse(raw as string), expected);
+  }
+  for (const parameters of [
+    { limit: -1 }, { limit: 1.5 }, { limit: '2' }, { limit: null }, { limit: Number.MAX_SAFE_INTEGER + 1 },
+    { maxDistinctRatio: -0.1 }, { maxDistinctRatio: 1.1 }, { maxDistinctRatio: null }, { unknown: 1 }, [], null,
+  ]) {
+    await assert.rejects(connection.runAndReadAll(
+      'SELECT data_profiling_top_values(channel, ?::JSON) AS value FROM sample', [JSON.stringify(parameters)],
+    ), /top_values/);
   }
 });

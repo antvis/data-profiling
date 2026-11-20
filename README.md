@@ -69,7 +69,8 @@ sql/
     missingness.sql        # Column missingness metrics
     cardinality.sql        # Exact distinct counts
     frequency.sql          # Top category frequencies
-    numeric.sql            # Numeric/temporal bounds and numeric means
+    numeric.sql            # Numeric/temporal aggregates
+    string.sql             # String length bounds
 src/
   index.ts                 # SQL export
   generate-sql.ts          # Discover metrics and generate the batch entry point
@@ -95,6 +96,7 @@ To add a metric, append a macro to an existing category or add a new `.sql` cate
 | `()` | Aggregate with the other metrics over the input | Table `[]` |
 | `(table_name)` | Read metadata using the table reference | Table `[]` |
 | `(column_value)` | Aggregate each column | Single column `[name]` |
+| `(column_value, metric_parameters := '{}'::JSON)` | Aggregate each column with default options | Single column `[name]` |
 
 Metrics return protocol-compliant typed values, or SQL NULL to skip an unsupported target. An undefined result on a supported target returns the typed `null` value instead. Column macros must bind on every input type; the built-in metrics check types internally. Optional `_data_profiling_parameters_<metric ID>()` helpers supply the effective parameter object; otherwise it is `{}`. Internal `_data_profiling_*` helpers are not discovered as metrics. Unsupported signatures or table macros fail the build. Discovery happens at build time: reload the complete SQL bundle to activate new metrics. Registering a macro in an existing connection alone does not update the batch entry point.
 
@@ -119,7 +121,7 @@ Tests cover all implemented metrics, type eligibility, empty/all-NULL inputs, no
 
 ## Implemented metrics
 
-`data_profiling(table_name)` computes all seven AVA default metrics, plus the existing `column_count` and `missing_count` metrics:
+`data_profiling(table_name)` computes all 13 AVA metrics, plus the existing `column_count` and `missing_count` metrics:
 
 | ID | Target | Calculation |
 | --- | --- | --- |
@@ -130,10 +132,22 @@ Tests cover all implemented metrics, type eligibility, empty/all-NULL inputs, no
 | `top_values` | String, Boolean | Up to 3 non-NULL values by count descending, then native value ascending. Omitted when distinct count / total row count exceeds 0.5. |
 | `min`, `max` | Numeric, date/timestamp | Bounds over finite values. Integers/decimals retain exact strings; dates/timestamps retain native precision. |
 | `mean` | Numeric | Arithmetic mean of finite values, returned as a floating-point `number`. |
+| `duplicate_count` | Every column | Non-NULL count minus distinct non-NULL count; this counts repeated values, not duplicate rows. |
+| `min_length`, `max_length` | String | Shortest/longest Unicode character length, including empty strings and trailing spaces. |
+| `sum` | Numeric | Native sum over finite values; exact integer/decimal results retain their typed strings. |
+| `stddev` | Numeric | Sample standard deviation over finite values (n−1); typed `null` for fewer than two values. |
+| `median` | Numeric | Native median over finite values, retaining DuckDB's decimal scale and rounding. |
 
-String columns include DuckDB UUID and ENUM types. Unsupported types receive only the NULL counts. Empty or all-NULL eligible columns return zero counts, empty frequency entries and typed `null` bounds/means.
+String columns include DuckDB UUID and ENUM types. Unsupported types receive only the NULL and duplicate counts. Empty or all-NULL eligible columns return zero counts, empty frequency entries and typed `null` bounds/means.
 
-`top_values` records the fixed AVA defaults `{ "limit": 3, "maxDistinctRatio": 0.5 }` in `parameters`. Its typed `object` contains an `entries` list of `{ value, count }` objects and a `truncated` Boolean; every nested field uses the result protocol's typed values. `truncated` is true when eligible categories exceed the limit. The denominator includes NULL rows. These defaults are not configurable through the public entry point yet.
+`top_values` records the fixed AVA defaults `{ "limit": 3, "maxDistinctRatio": 0.5 }` in `parameters`. Its typed `object` contains an `entries` list of `{ value, count }` objects and a `truncated` Boolean; every nested field uses the result protocol's typed values. `truncated` is true when eligible categories exceed the limit. The denominator includes NULL rows. The batch entry point uses these defaults. Individual calls can supply a validated JSON options object:
+
+```sql
+SELECT data_profiling_top_values(channel, '{"limit": 10, "maxDistinctRatio": 1}'::JSON)
+FROM orders;
+```
+
+`limit` must be a non-negative JavaScript-safe integer; `maxDistinctRatio` must be between 0 and 1. Unknown options are rejected. Native `sum` and `median` currently aggregate a materialized list to bind safely on heterogeneous tables without losing decimal precision; their memory use grows with the number of observations.
 
 Results use this library's protocol: temporal bounds are ISO strings rather than AVA's Unix milliseconds, and exact counts are integer strings rather than JavaScript numbers. Consumers adapt these representations when integrating with AVA.
 

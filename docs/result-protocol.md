@@ -74,7 +74,7 @@ not a claim that the corresponding computations have been implemented.
   [`duckdb_functions()`](https://duckdb.org/docs/current/sql/meta/duckdb_table_functions).
   It generates `dist/data_profiling.sql`, a complete bundle of definitions and the batch entry point.
   Metric formulas remain in their category files; do not edit the generated file.
-- Macros named `data_profiling_<metric ID>` with `()`, `(table_name)` or `(column_value)` parameters
+- Macros named `data_profiling_<metric ID>` with `()`, `(table_name)`, `(column_value)` or `(column_value, metric_parameters := '{}'::JSON)` parameters
   automatically join the table-aggregate, table-metadata or per-column aggregate stage, respectively.
   IDs use lowercase letters, digits and underscores, starting with a letter. The value/result helper names are reserved.
   Column macros must bind on every column type and check eligibility internally. SQL NULL skips a target;
