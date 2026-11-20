@@ -29,6 +29,15 @@ const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).ma
 
 AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结果适配成自己的 `Profile` 结构。AVA 对外的查询接口只接受只读 SELECT，注册操作不走该接口。
 
+在本仓库执行 `npm install` 后，可以运行[完整的 Node.js 示例](./examples/node.mjs)：
+
+```sh
+npm run build
+node examples/node.mjs
+```
+
+示例创建内存表、加载 SQL、计算画像，并输出解析后的结果。
+
 ## 结果协议 v1
 
 | 字段 | 含义 |
@@ -78,6 +87,8 @@ src/
 dist/                      # 构建生成的 JavaScript、类型声明和 SQL，不进 Git
 docs/
   result-protocol.md
+examples/
+  node.mjs                 # 可运行的 Node.js 示例
 tests/
   result.test.ts
   metrics/table.test.ts

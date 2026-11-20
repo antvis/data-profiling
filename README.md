@@ -29,6 +29,15 @@ const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).ma
 
 AVA registers the SQL during internal connection initialization, then calls the macro when profiling. Its public query interface accepts only read-only SELECT statements. AVA adapts the results to its own `Profile` structure.
 
+To run the [complete Node.js example](./examples/node.mjs) from this repository after `npm install`:
+
+```sh
+npm run build
+node examples/node.mjs
+```
+
+The example creates an in-memory table, loads the SQL, profiles the table and prints the parsed results.
+
 ## Result protocol v1
 
 | Field | Meaning |
@@ -78,6 +87,8 @@ src/
 dist/                      # Generated JavaScript, declarations and SQL bundle; ignored by Git
 docs/
   result-protocol.md
+examples/
+  node.mjs                 # Runnable Node.js example
 tests/
   result.test.ts
   metrics/table.test.ts
