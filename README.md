@@ -1,33 +1,132 @@
 **English** | [简体中文](./README.zh-CN.md)
 
-# AVA Data Profiling
+# Data Profiling
 
-AVA Data Profiling is a DuckDB SQL project for profiling tabular data, inspired by [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling). Its focus is on statistics you can query and reuse, from missingness and value counts to distributions and duplicate groups.
+Data Profiling is a TypeScript library for profiling tabular data with DuckDB SQL, inspired by [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling). Its focus is on statistics you can query and reuse.
 
-> [!NOTE]
-> The library is in the design stage. The example shows the proposed AVA SQL interface.
+## Quick start
 
-## Usage example
+The npm package exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
 
-Suppose `orders` is a DuckDB table with numeric columns `amount` and `quantity`, a text column `channel`, and a timestamp column `created_at`.
+For local integration, install this repository in the consuming project:
 
-```sql
-SELECT * FROM ava_profile('orders');
+```sh
+npm install /absolute/path/to/data_profiling
 ```
 
-The proposed call covers the core metrics that apply to this table. It summarizes row and column counts, counts by column type, and duplicate-group counts and rates, as well as missing values, frequencies and distinct counts for each column. It also computes numeric ranges, aggregates, quantiles and histograms, string lengths for `channel`, and the time range for `created_at`. For the numeric pair, it computes Pearson and Spearman correlations.
+```ts
+import { dataProfilingSQL } from 'data_profiling';
+import type { ProfileResult, ProfileRow } from 'data_profiling';
 
-Use `columns` to profile just the two numeric columns.
-
-```sql
-SELECT * FROM ava_profile('orders', columns := ['amount', 'quantity']);
+await connection.run(dataProfilingSQL);
+const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
+const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
+  ...row,
+  parameters: JSON.parse(row.parameters),
+  value: JSON.parse(row.value),
+}));
 ```
 
-## Core metrics
+AVA registers the SQL during internal connection initialization, then calls the macro when profiling. Its public query interface accepts only read-only SELECT statements. AVA adapts the results to its own `Profile` structure.
 
-The **Importance** rating reflects each group's value for general-purpose profiling in AVA. Five stars mark the core metrics. Four stars are for common follow-up analyses, three for context-specific statistics, two for specialized analysis, and one for narrow domain needs.
+## Result protocol v1
 
-The tags describe AVA's planned behavior for applicable input types.
+| Field | Meaning |
+| --- | --- |
+| `protocol_version` | `1`; version of this result contract. |
+| `table_name` | Input table reference as supplied. |
+| `columns` | `[]` for table metrics; one name for column metrics; two ordered names for pairs. |
+| `metric` | Metric ID from the catalog below. |
+| `parameters` | JSON object containing effective metric options. |
+| `value` | Typed JSON value, recursively supporting scalars, lists and objects. |
+
+Exact integers and decimals are strings inside typed values. Floating-point numbers, special numeric values, timestamps, durations and undefined results have explicit encodings. Histogram edges/counts and quantile entries are structured values; pair metrics use the same six columns. See the [full contract, compatibility rules and metric-family shapes](./docs/result-protocol.md), exported `ProfileResult` / `ProfileRow` TypeScript types.
+
+The Node driver returns JSON columns as text; parsing them produces `ProfileResult` as shown above. No conversion to JavaScript `number` is required.
+
+## DuckDB CLI
+
+Run `npm run build` first, then load the generated SQL bundle, which includes the protocol helpers, metric categories and public entry point:
+
+```sql
+.read dist/data_profiling.sql
+
+CREATE TEMP TABLE orders AS
+SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, channel);
+
+SELECT * FROM data_profiling('orders');
+```
+
+`.read` is a CLI command. Other clients execute `dataProfilingSQL`, which includes every required SQL file.
+
+## Organization and execution
+
+```text
+sql/
+  result.sql               # Shared value and envelope constructors
+  metrics/
+    table.sql              # Table metrics; comment blocks separate definitions
+    missingness.sql        # Column missingness metrics
+src/
+  index.ts                 # SQL export
+  generate-sql.ts          # Discover metrics and generate the batch entry point
+  types.ts                 # Protocol types
+dist/                      # Generated JavaScript, declarations and SQL bundle; ignored by Git
+docs/
+  result-protocol.md
+tests/
+  result.test.ts
+  metrics/table.test.ts
+  metrics/missingness.test.ts
+  data-profiling.test.ts
+  generate-sql.test.ts      # Automatic discovery and empty-input regressions
+  fixture.ts               # Shared test input and connection setup
+```
+
+Category functions own each metric's calculation and typed value. The build loads `sql/metrics/*.sql` in filename order, discovers metrics from DuckDB's macro catalog and generates `dist/data_profiling.sql` with all definitions and the batch entry point. That entry batches compatible aggregates, expands them into rows and calls `data_profiling_result`. Compatible aggregates share one input scan. Column names are recovered after aggregation so empty inputs retain their names. The npm module reads the generated bundle once when loaded and needs no build dependencies at runtime.
+
+To add a metric, append a macro to an existing category or add a new `.sql` category file, then run `npm run build`. Name it `data_profiling_<metric ID>`, with an ID starting with a lowercase letter and containing only lowercase letters, digits and underscores. `data_profiling_value` and `data_profiling_result` are reserved protocol helpers. Parameter names determine execution:
+
+| Macro parameters | Execution | Result target |
+| --- | --- | --- |
+| `()` | Aggregate with the other metrics over the input | Table `[]` |
+| `(table_name)` | Read metadata using the table reference | Table `[]` |
+| `(column_value)` | Aggregate each column | Single column `[name]` |
+
+Metrics must return protocol-compliant typed values; column metrics must currently work on every input column type. Unsupported signatures or table macros fail the build. Discovery happens at build time: reload the complete SQL bundle to activate new metrics. Registering a macro in an existing connection alone does not update the batch entry point.
+
+The protocol can represent every metric family listed below without changing its outer columns. Execution support is separate: distributions and pairs can require grouping/sorting or additional stages, while file/image metadata and ADF may need extensions or execution adapters. Adding them does not require every metric to share one scan. Use EXPLAIN ANALYZE and representative data to verify performance.
+
+## Development
+
+Use Node.js 22.13 or later:
+
+```sh
+npm install
+npm run build
+npm test
+npm pack
+```
+
+`package-lock.json` is local-only and ignored by Git. Both `src/` and the tests use TypeScript. Tests are type-checked before running with Node's built-in test runner; `@duckdb/node-api` 2.0.0-r.1 is a development dependency only.
+
+`npm run build` compiles the library into `dist/` and generates declarations and the SQL bundle. `npm install`, `npm test` and `npm pack` also trigger the build. Only `sql/result.sql` and `sql/metrics/*.sql` are maintained as SQL source. Generated files stay in `dist/` and are ignored by Git. The package contains compiled runtime output, the single SQL bundle and protocol documentation, excluding source SQL, tests, the generator and build dependencies. It has not been published to npm.
+
+Tests cover table statistics, column missingness, the result protocol, the public entry point, automatic metric discovery, empty inputs and unusual column names. Essential test data and expectations live directly in the test sources.
+
+## Planned column selection
+
+The following API is a design example and is not implemented:
+
+```sql
+SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
+```
+
+## Planned core metrics
+
+The **Importance** rating reflects each group's value for general-purpose profiling. Five stars mark the core metrics. Four stars are for common follow-up analyses, three for context-specific statistics, two for specialized analysis, and one for narrow domain needs.
+
+The tags describe the library's planned behavior for applicable input types.
 
 - `default` includes the metric in the standard profile.
 - `minimal` includes the metric in the lighter profile. `minimal (text)` applies to text columns in that profile.

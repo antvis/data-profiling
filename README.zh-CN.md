@@ -1,33 +1,132 @@
 [English](./README.md) | **简体中文**
 
-# AVA 数据画像
+# Data Profiling 数据画像
 
-AVA 数据画像是一个面向 DuckDB SQL 的数据画像项目，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。从缺失值、取值频数到分布和重复组，统计结果都可以用 SQL 查询和复用。
+Data Profiling 是一个用 DuckDB SQL 计算指标的 TypeScript 数据画像库，灵感来自 [fg-data-profiling](https://github.com/Data-Centric-AI-Community/fg-data-profiling)。统计结果可以用 SQL 查询和复用。
 
-> [!NOTE]
-> 项目目前处于设计阶段。下面展示拟议的 AVA SQL 调用方式。
+## 快速开始
 
-## 使用示例
+npm 包向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
 
-假设 DuckDB 中有一张 `orders` 表，其中 `amount` 和 `quantity` 是数值列，`channel` 是文本列，`created_at` 是时间戳列。
+本地联调时，在调用方项目中安装本仓库：
 
-```sql
-SELECT * FROM ava_profile('orders');
+```sh
+npm install /absolute/path/to/data_profiling
 ```
 
-这次调用覆盖适用于订单表的核心指标。表级统计给出行列数、各类型列数、重复组数及其比例，各列统计缺失值、取值频数和不同值数。数值列再算范围、基础聚合、分位数和直方图，`channel` 计算文本长度，`created_at` 计算时间范围。两列数值之间还会计算 Pearson 和 Spearman 相关性。
+```ts
+import { dataProfilingSQL } from 'data_profiling';
+import type { ProfileResult, ProfileRow } from 'data_profiling';
 
-通过 `columns` 指定本次画像只分析这两个数值列。
-
-```sql
-SELECT * FROM ava_profile('orders', columns := ['amount', 'quantity']);
+await connection.run(dataProfilingSQL);
+const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
+const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
+  ...row,
+  parameters: JSON.parse(row.parameters),
+  value: JSON.parse(row.value),
+}));
 ```
 
-## 核心指标
+AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结果适配成自己的 `Profile` 结构。AVA 对外的查询接口只接受只读 SELECT，注册操作不走该接口。
 
-**重要性**按各组统计对 AVA 通用画像的价值评估。五星是核心指标，四星常用于进一步排查，三星视场景使用，两星用于专项分析，一星适用于少数领域。
+## 结果协议 v1
 
-计算标记说明 AVA 针对适用输入类型的拟议行为。
+| 字段 | 含义 |
+| --- | --- |
+| `protocol_version` | 固定为 `1`，表示结果协议版本。 |
+| `table_name` | 调用时传入的表引用。 |
+| `columns` | 表级为 `[]`，单列放一个列名，列对放两个有序列名。 |
+| `metric` | 下方指标目录中的 ID。 |
+| `parameters` | JSON 对象，记录实际生效的指标参数。 |
+| `value` | 带类型标签的 JSON，支持标量及递归的列表、对象。 |
+
+整数和精确小数以文本保留在带类型的值中，浮点数、特殊数值、时间、时长和未定义结果有明确编码。直方图边界、频数和分位点采用结构化值；列对也使用同样六列。详见[完整协议、兼容规则和各指标族的结构](./docs/result-protocol.md)、导出的 `ProfileResult` / `ProfileRow` TypeScript 类型。
+
+Node 驱动将 JSON 列返回为文本，按上例解析后得到 `ProfileResult`，无需强制转成 JavaScript `number`。
+
+## DuckDB CLI
+
+先运行 `npm run build`，再加载生成的完整 SQL，其中已包含协议辅助函数、分类指标和统一入口：
+
+```sql
+.read dist/data_profiling.sql
+
+CREATE TEMP TABLE orders AS
+SELECT * FROM (VALUES (120, 'web'), (80, 'store'), (NULL, NULL)) AS t(amount, channel);
+
+SELECT * FROM data_profiling('orders');
+```
+
+`.read` 是 CLI 命令，其他客户端执行 `dataProfilingSQL` 即可加载全部依赖。
+
+## 目录组织与执行
+
+```text
+sql/
+  result.sql               # 共用的值与结果构造函数
+  metrics/
+    table.sql              # 表级指标，类内用注释块划分
+    missingness.sql        # 列缺失指标
+src/
+  index.ts                 # SQL 导出
+  generate-sql.ts          # 发现指标并生成批量入口
+  types.ts                 # 协议类型
+dist/                      # 构建生成的 JavaScript、类型声明和 SQL，不进 Git
+docs/
+  result-protocol.md
+tests/
+  result.test.ts
+  metrics/table.test.ts
+  metrics/missingness.test.ts
+  data-profiling.test.ts
+  generate-sql.test.ts      # 新指标自动接入和空表回归
+  fixture.ts               # 共用测试输入和连接准备
+```
+
+分类函数负责指标计算和带类型的值。构建时按文件名顺序加载 `sql/metrics/*.sql`，从 DuckDB 宏目录发现指标，生成包含全部定义和批量入口的 `dist/data_profiling.sql`。统一入口将兼容聚合批量执行、展开成行，再调用 `data_profiling_result`。兼容的聚合共用一次输入扫描。列名在聚合后获取，避免空表丢失列名。npm 模块只在加载时读取生成文件，无运行时构建依赖。
+
+新增指标只需在现有分类文件中追加宏，或新建一个 `.sql` 分类文件，然后运行 `npm run build`。宏名使用 `data_profiling_<指标 ID>`，ID 为小写字母开头的小写字母、数字和下划线组合；`data_profiling_value` 和 `data_profiling_result` 为保留的协议辅助函数。参数名约定如下：
+
+| 宏参数 | 执行方式 | 结果目标 |
+| --- | --- | --- |
+| `()` | 与其他聚合一起扫描输入 | 表级 `[]` |
+| `(table_name)` | 传入表名读取元数据 | 表级 `[]` |
+| `(column_value)` | 对每列执行聚合 | 单列 `[列名]` |
+
+指标须返回协议规定的带类型值；逐列指标目前须适用于所有输入列类型。不支持的参数或表宏会使构建失败。自动接入发生在构建时；重新加载完整 SQL 后，新指标才会生效。仅向已有连接注册一个宏不会更新批量入口。
+
+结果协议能表达下方各指标族，无需改动外层六列。执行能力单独扩展：分布和列对可能需要分组、排序或额外阶段，文件、图像元数据和 ADF 可能需要扩展或执行适配。不要求所有指标强行共用一次扫描，性能用 EXPLAIN ANALYZE 和代表性数据验证。
+
+## 本地开发
+
+使用 Node.js 22.13 或更高版本：
+
+```sh
+npm install
+npm run build
+npm test
+npm pack
+```
+
+`package-lock.json` 只在本地保留，已加入 Git 忽略规则。`src/` 和测试均使用 TypeScript，严格类型检查后再运行 Node 内置测试框架。`@duckdb/node-api` 2.0.0-r.1 仅作开发依赖。
+
+`npm run build` 将库编译到 `dist/`，生成类型声明及完整 SQL；`npm install`、`npm test` 和 `npm pack` 也会触发构建。SQL 源码只维护 `sql/result.sql` 和 `sql/metrics/*.sql`，生成文件全部放在 `dist/`，不进 Git。发布包包含运行时编译产物、唯一的完整 SQL 包和协议文档，不包含源 SQL、测试、生成器或构建依赖。当前尚未发布到 npm。
+
+测试覆盖表级统计、列缺失、结果协议、统一入口，以及新增指标自动发现、空表和特殊列名。必要的测试输入和预期值直接保留在测试源码中。
+
+## 规划中的列选择
+
+以下为接口设计示例，尚未实现：
+
+```sql
+SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
+```
+
+## 规划中的核心指标
+
+**重要性**按各组统计对通用画像的价值评估。五星是核心指标，四星常用于进一步排查，三星视场景使用，两星用于专项分析，一星适用于少数领域。
+
+计算标记说明库针对适用输入类型的拟议行为。
 
 - `default` 表示默认画像会计算该指标。
 - `minimal` 表示最小画像也会计算该指标。`minimal（文本列）` 表示仅对文本列计算。
