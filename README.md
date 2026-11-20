@@ -6,7 +6,7 @@ Data Profiling is a TypeScript library for profiling tabular data with DuckDB SQ
 
 ## Quick start
 
-The npm package exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
+The npm package uses ES modules and exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
 
 For local integration, install this repository in the consuming project:
 
@@ -29,11 +29,11 @@ const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).ma
 
 AVA registers the SQL during internal connection initialization, then calls the macro when profiling. Its public query interface accepts only read-only SELECT statements. AVA adapts the results to its own `Profile` structure.
 
-To run the [complete Node.js example](./examples/node.mjs) from this repository after `npm install`:
+To run the [complete Node.js example](./examples/node.js) from this repository after `npm install`:
 
 ```sh
 npm run build
-node examples/node.mjs
+node examples/node.js
 ```
 
 The example creates an in-memory table, loads the SQL, profiles the table and prints the parsed results.
@@ -88,7 +88,7 @@ dist/                      # Generated JavaScript, declarations and SQL bundle; 
 docs/
   result-protocol.md
 examples/
-  node.mjs                 # Runnable Node.js example
+  node.js                  # Runnable Node.js example
 tests/
   result.test.ts
   metrics/table.test.ts

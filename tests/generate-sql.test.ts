@@ -3,8 +3,8 @@ import { appendFileSync, cpSync, mkdtempSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { generateProfilingSQL, readDefinitionsSQL } from '../src/generate-sql';
-import { openFixture } from './fixture';
+import { generateProfilingSQL, readDefinitionsSQL } from '../src/generate-sql.js';
+import { openFixture } from './fixture.js';
 
 test('new macros in existing and new category files join the profile automatically', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'data-profiling-'));

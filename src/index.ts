@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
-export type { JsonValue, MetricValue, ProfileResult, ProfileRow } from './types';
+export type { JsonValue, MetricValue, ProfileResult, ProfileRow } from './types.js';
 
-export const dataProfilingSQL = readFileSync(join(__dirname, 'data_profiling.sql'), 'utf8');
+export const dataProfilingSQL = readFileSync(new URL('./data_profiling.sql', import.meta.url), 'utf8');

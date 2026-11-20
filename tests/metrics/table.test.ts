@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { openFixture, parseValues } from '../fixture';
+import { openFixture, parseValues } from '../fixture.js';
 
 test('table.sql returns row and column counts', async (t) => {
   const connection = await openFixture(t);

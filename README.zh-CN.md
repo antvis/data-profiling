@@ -6,7 +6,7 @@ Data Profiling 是一个用 DuckDB SQL 计算指标的 TypeScript 数据画像�
 
 ## 快速开始
 
-npm 包向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
+npm 包使用 ES Modules，向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
 
 本地联调时，在调用方项目中安装本仓库：
 
@@ -29,11 +29,11 @@ const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).ma
 
 AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结果适配成自己的 `Profile` 结构。AVA 对外的查询接口只接受只读 SELECT，注册操作不走该接口。
 
-在本仓库执行 `npm install` 后，可以运行[完整的 Node.js 示例](./examples/node.mjs)：
+在本仓库执行 `npm install` 后，可以运行[完整的 Node.js 示例](./examples/node.js)：
 
 ```sh
 npm run build
-node examples/node.mjs
+node examples/node.js
 ```
 
 示例创建内存表、加载 SQL、计算画像，并输出解析后的结果。
@@ -88,7 +88,7 @@ dist/                      # 构建生成的 JavaScript、类型声明和 SQL，
 docs/
   result-protocol.md
 examples/
-  node.mjs                 # 可运行的 Node.js 示例
+  node.js                  # 可运行的 Node.js 示例
 tests/
   result.test.ts
   metrics/table.test.ts

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { ProfileResult, ProfileRow } from 'data_profiling';
-import { openFixture } from './fixture';
+import { openFixture } from './fixture.js';
 
 test('result.sql preserves pair targets, parameters and nested typed values', async (t) => {
   const connection = await openFixture(t);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { openFixture, parseValues } from '../fixture';
+import { openFixture, parseValues } from '../fixture.js';
 
 test('missingness.sql counts partial, complete and entirely missing columns', async (t) => {
   const connection = await openFixture(t);

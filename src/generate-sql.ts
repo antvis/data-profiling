@@ -1,8 +1,9 @@
 import { DuckDBInstance, type DuckDBConnection } from '@duckdb/node-api';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export function readDefinitionsSQL(directory = join(__dirname, '..', 'sql')): string {
+export function readDefinitionsSQL(directory = fileURLToPath(new URL('../sql', import.meta.url))): string {
   return ['result.sql', ...readdirSync(join(directory, 'metrics')).filter((name) => name.endsWith('.sql'))
     .sort().map((name) => join('metrics', name))]
     .map((file) => readFileSync(join(directory, file), 'utf8'))
@@ -81,8 +82,8 @@ FROM (
   }
 }
 
-if (require.main === module) {
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
   generateProfilingSQL(readDefinitionsSQL())
-    .then((sql) => writeFileSync(join(__dirname, 'data_profiling.sql'), sql))
+    .then((sql) => writeFileSync(new URL('./data_profiling.sql', import.meta.url), sql))
     .catch((error: unknown) => { console.error(error); process.exitCode = 1; });
 }
