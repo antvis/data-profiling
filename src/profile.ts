@@ -1,4 +1,4 @@
-import type { JsonValue, MetricValue, ProfileResult } from './types';
+import type { MetricValue, ProfileResult } from './types';
 
 export type ProfileColumn = { name: string; type: string };
 export type MetricConfig = string | { id: string; [option: string]: unknown };
@@ -82,23 +82,12 @@ function valueType(type: string, metric: string): MetricValue['type'] {
   return 'integer';
 }
 
-function encode(type: MetricValue['type'], value: string): string {
-  let payload = `${value}::VARCHAR`;
-  if (type === 'number')
-    payload = `CASE WHEN isfinite(${value}) THEN to_json(${value}) ELSE to_json(${value}::VARCHAR) END`;
-  if (type === 'boolean') payload = value;
-  if (type === 'timestamp') payload = `replace(${value}::VARCHAR, ' ', 'T')`;
-  if (type === 'timestamptz') payload = `strftime(${value} AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S.%fZ')`;
-  return `CASE WHEN ${value} IS NULL THEN json_object('type', 'null', 'value', NULL)
-    ELSE json_object('type', '${type}', 'value', ${payload}) END`;
-}
-
-export interface PlannedMetric {
+interface PlannedMetric {
   metric: string;
   column?: ProfileColumn;
   alias: string;
   type: MetricValue['type'];
-  parameters: Record<string, JsonValue>;
+  parameters: Record<string, number>;
   distinctAlias?: string;
 }
 
@@ -108,11 +97,40 @@ export interface ProfilingPlan {
   decode(row: Record<string, unknown>): ProfileResult[];
 }
 
-function compile(
+function scalar(type: MetricValue['type'], raw: unknown): MetricValue {
+  if (raw == null) return { type: 'null', value: null };
+  if (type === 'number') {
+    if (typeof raw !== 'number' && typeof raw !== 'string') throw new Error('Invalid numeric aggregate');
+    const value = Number(raw);
+    if (Number.isFinite(value)) return { type, value };
+    if (raw === 'NaN' || Number.isNaN(raw)) return { type, value: 'NaN' };
+    if (value === Infinity) return { type, value: 'Infinity' };
+    if (value === -Infinity) return { type, value: '-Infinity' };
+    throw new Error('Invalid numeric aggregate');
+  }
+  if (type === 'boolean') {
+    if (typeof raw !== 'boolean') throw new Error('Invalid boolean aggregate');
+    return { type, value: raw };
+  }
+  if (type === 'integer') {
+    if ((typeof raw === 'number' && !Number.isSafeInteger(raw)) || !/^-?\d+$/.test(String(raw))) {
+      throw new Error('Invalid or lossy integer aggregate; use getRowObjectsJson()');
+    }
+    return { type, value: String(raw) };
+  }
+  if (type === 'decimal' || type === 'string' || type === 'date' || type === 'timestamp' || type === 'timestamptz') {
+    if (typeof raw !== 'string') throw new Error(`Invalid ${type} aggregate`);
+    return { type, value: raw };
+  }
+  throw new Error(`Invalid scalar type: ${type}`);
+}
+
+/** Compile one native aggregate query from the schema; decode only the resulting statistics. */
+export function createProfilingPlan(
   tableName: string,
   columns: readonly ProfileColumn[],
   options: ProfilingOptions = {}
-): { sql: string; metrics: PlannedMetric[] } {
+): ProfilingPlan {
   if (typeof tableName !== 'string' || !tableName) throw new Error('tableName must be a non-empty string');
   const names = new Set<string>();
   for (const column of columns) {
@@ -142,7 +160,7 @@ function compile(
     column: ProfileColumn | undefined,
     alias: string,
     type: MetricValue['type'],
-    params: Record<string, JsonValue> = {},
+    params: Record<string, number> = {},
     distinctAlias?: string
   ) => {
     planned.push({ metric, column: column && { ...column }, alias, type, parameters: params, distinctAlias });
@@ -201,91 +219,14 @@ function compile(
     }
   }
   const expressions = [...aggregates].map(([expression, alias]) => `${expression} AS ${alias}`);
-  return {
-    sql: `SELECT count(*) AS __rows${expressions.length ? ', ' + expressions.join(',\n') : ''} FROM ${source}`,
-    metrics: planned,
-  };
-}
-
-function topValueSQL(metric: PlannedMetric): string {
-  const {
-    alias,
-    distinctAlias,
-    parameters: { limit },
-  } = metric;
-  const category = encode(kind(metric.column!.type) === 'boolean' ? 'boolean' : 'string', 'entry.value');
-  return `CASE WHEN ${alias} IS NULL THEN NULL ELSE json_object('type', 'object', 'value', json_object(
-    'entries', json_object('type', 'list', 'value', list_transform(${alias}, lambda entry:
-      json_object('type', 'object', 'value', json_object('value', ${category}, 'count', ${encode(
-    'integer',
-    'entry.count'
-  )})))),
-    'truncated', json_object('type', 'boolean', 'value', ${distinctAlias} > ${limit}))) END`;
-}
-
-/** SQL-only transport: native aggregation followed by the six-column result protocol. */
-export function createProfilingSQL(
-  tableName: string,
-  columns: readonly ProfileColumn[],
-  options: ProfilingOptions = {}
-): string {
-  const plan = compile(tableName, columns, options);
-  if (!plan.metrics.length)
-    return `SELECT 1 AS protocol_version, ${literal(tableName)} AS table_name,
-    []::VARCHAR[] AS columns, ''::VARCHAR AS metric, '{}'::JSON AS parameters, NULL::JSON AS value WHERE false`;
-  const rows = plan.metrics.map(
-    (metric) => `struct_pack(protocol_version := 1, table_name := ${literal(tableName)},
-    columns := ${metric.column ? `[${literal(metric.column.name)}]` : '[]::VARCHAR[]'}, metric := '${metric.metric}',
-    parameters := ${literal(JSON.stringify(metric.parameters))}::JSON,
-    value := ${metric.metric === 'top_values' ? topValueSQL(metric) : encode(metric.type, metric.alias)})`
-  );
-  return `SELECT * FROM (SELECT unnest([${rows.join(',\n')}], recursive := true) FROM (${
-    plan.sql
-  })) WHERE value IS NOT NULL`;
-}
-
-function scalar(type: MetricValue['type'], raw: unknown): MetricValue {
-  if (raw == null) return { type: 'null', value: null };
-  if (type === 'number') {
-    if (typeof raw !== 'number' && typeof raw !== 'string') throw new Error('Invalid numeric aggregate');
-    const value = Number(raw);
-    if (Number.isFinite(value)) return { type, value };
-    if (raw === 'NaN' || Number.isNaN(raw)) return { type, value: 'NaN' };
-    if (value === Infinity) return { type, value: 'Infinity' };
-    if (value === -Infinity) return { type, value: '-Infinity' };
-    throw new Error('Invalid numeric aggregate');
-  }
-  if (type === 'boolean') {
-    if (typeof raw !== 'boolean') throw new Error('Invalid boolean aggregate');
-    return { type, value: raw };
-  }
-  if (type === 'integer') {
-    if ((typeof raw === 'number' && !Number.isSafeInteger(raw)) || !/^-?\d+$/.test(String(raw))) {
-      throw new Error('Invalid or lossy integer aggregate; use getRowObjectsJson()');
-    }
-    return { type, value: String(raw) };
-  }
-  if (type === 'decimal' || type === 'string' || type === 'date' || type === 'timestamp' || type === 'timestamptz') {
-    if (typeof raw !== 'string') throw new Error(`Invalid ${type} aggregate`);
-    return { type, value: raw };
-  }
-  throw new Error(`Invalid scalar type: ${type}`);
-}
-
-/** Fast native transport: one aggregate row, with protocol encoding performed once by the caller. */
-export function createProfilingPlan(
-  tableName: string,
-  columns: readonly ProfileColumn[],
-  options: ProfilingOptions = {}
-): ProfilingPlan {
-  const plan = compile(tableName, columns, options);
+  const query = `SELECT count(*) AS __rows${expressions.length ? ', ' + expressions.join(',\n') : ''} FROM ${source}`;
   const temporal = new Map(
-    plan.metrics
+    planned
       .filter(({ type }) => ['date', 'timestamp', 'timestamptz'].includes(type))
       .map(({ alias, type }) => [alias, type])
   );
   const aliases = new Set(
-    plan.metrics.flatMap(({ alias, distinctAlias }) => (distinctAlias ? [alias, distinctAlias] : [alias]))
+    planned.flatMap(({ alias, distinctAlias }) => (distinctAlias ? [alias, distinctAlias] : [alias]))
   );
   const projected = [...aliases].map((alias) => {
     const type = temporal.get(alias);
@@ -295,11 +236,11 @@ export function createProfilingPlan(
     return alias;
   });
   return {
-    sql: projected.length ? `SELECT ${projected.join(', ')} FROM (${plan.sql})` : 'SELECT 1 WHERE false',
-    metrics: plan.metrics,
+    sql: projected.length ? `SELECT ${projected.join(', ')} FROM (${query})` : 'SELECT 1 WHERE false',
+    metrics: planned,
     decode(row) {
       const results: ProfileResult[] = [];
-      for (const metric of plan.metrics) {
+      for (const metric of planned) {
         if (!Object.hasOwn(row, metric.alias)) throw new Error(`Missing aggregate: ${metric.alias}`);
         const raw = row[metric.alias];
         let value: MetricValue;

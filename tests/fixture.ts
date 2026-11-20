@@ -1,9 +1,13 @@
 import { DuckDBInstance, type DuckDBConnection } from '@duckdb/node-api';
 import type { TestContext } from 'node:test';
-import { dataProfilingSQL, type JsonValue, type MetricValue } from 'data_profiling';
+import { createProfilingPlan, type ProfileColumn, type ProfilingOptions, type ProfileResult } from 'data_profiling';
 
 export const columns = {
-  amount: 'DOUBLE', channel: 'VARCHAR', approved: 'BOOLEAN', empty: 'VARCHAR', complete: 'INTEGER',
+  amount: 'DOUBLE',
+  channel: 'VARCHAR',
+  approved: 'BOOLEAN',
+  empty: 'VARCHAR',
+  complete: 'INTEGER',
 };
 const rows = [
   [120, 'web', true, null, 1],
@@ -21,15 +25,26 @@ export async function openFixture(t: TestContext): Promise<DuckDBConnection> {
     instance.closeSync();
   });
   connection = await instance.connect();
-  await connection.run(dataProfilingSQL);
   const definitions = Object.entries(columns).map(([name, type]) => `${name} ${type}`);
   await connection.run(`CREATE TABLE sample (${definitions.join(', ')})`);
-  const placeholders = Object.keys(columns).map(() => '?').join(', ');
+  const placeholders = Object.keys(columns)
+    .map(() => '?')
+    .join(', ');
   for (const row of rows) {
     await connection.run(`INSERT INTO sample VALUES (${placeholders})`, row);
   }
   return connection;
 }
 
-export const parseValues = (row: Record<string, JsonValue>): Record<string, MetricValue> =>
-  Object.fromEntries(Object.entries(row).map(([name, value]) => [name, JSON.parse(value as string)]));
+export async function profile(
+  connection: DuckDBConnection,
+  table: string,
+  options: ProfilingOptions = {}
+): Promise<ProfileResult[]> {
+  const columns = (
+    await connection.runAndReadAll('SELECT name, type FROM pragma_table_info(?)', [table])
+  ).getRowObjectsJson() as ProfileColumn[];
+  const plan = createProfilingPlan(table, columns, options);
+  if (!plan.metrics.length) return [];
+  return plan.decode((await connection.runAndReadAll(plan.sql)).getRowObjectsJson()[0]);
+}
