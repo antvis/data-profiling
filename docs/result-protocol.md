@@ -77,8 +77,11 @@ not a claim that the corresponding computations have been implemented.
 - Macros named `data_profiling_<metric ID>` with `()`, `(table_name)` or `(column_value)` parameters
   automatically join the table-aggregate, table-metadata or per-column aggregate stage, respectively.
   IDs use lowercase letters, digits and underscores, starting with a letter. The value/result helper names are reserved.
-  Column aggregates currently apply to every column type. Unsupported signatures and table macros fail generation;
-  type-specific, pair and multi-stage execution still require extending the generator.
+  Column macros must bind on every column type and check eligibility internally. SQL NULL skips a target;
+  the typed `null` represents an undefined result on a supported target. Unsupported signatures and table macros fail generation;
+  pair and multi-stage execution still require extending the generator.
+- Optional `_data_profiling_parameters_<metric ID>()` helpers return the effective parameter JSON object;
+  without one, the envelope uses `{}`. Internal `_data_profiling_*` helpers are not metrics.
 - `data_profiling_value(type, payload)` builds the common JSON tag. Complex payloads can use
   DuckDB's [JSON construction functions](https://duckdb.org/docs/2.0/data/json/creating_json).
 - `data_profiling_result(table_name, columns, metric, value, parameters := '{}'::JSON)` is the shared envelope constructor.
