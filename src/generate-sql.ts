@@ -45,13 +45,14 @@ export async function generateProfilingSQL(definitionsSQL: string): Promise<stri
         aggregates.push(`${name}() AS ${value}`);
       } else if (parameters.length === 1 && parameters[0] === 'table_name') {
         value = `${name}(table_name)`;
-      } else if (parameters.length === 1 && parameters[0] === 'column_value') {
+      } else if (parameters[0] === 'column_value' && (parameters.length === 1 ||
+        (parameters.length === 2 && parameters[1] === 'metric_parameters'))) {
         const prefix = `metric_${index}_`;
         aggregates.push(`${name}(COLUMNS(*)) AS "${prefix}\\0"`);
         value = `COLUMNS('^${prefix}')`;
         columns = `[substr(alias(${value}), ${prefix.length + 1})]`;
       } else {
-        throw new Error(`Unsupported parameters for ${name}: use (), (table_name), or (column_value)`);
+        throw new Error(`Unsupported parameters for ${name}: use (), (table_name), or (column_value, metric_parameters := '{}'::JSON)`);
       }
       const helper = `_data_profiling_parameters_${metric}`;
       const metricParameters = parameterHelpers.has(helper) ? `${helper}()` : "'{}'::JSON";

@@ -69,7 +69,8 @@ sql/
     missingness.sql        # 列缺失指标
     cardinality.sql        # 精确不同值计数
     frequency.sql          # 高频类别及频数
-    numeric.sql            # 数值和日期边界、数值均值
+    numeric.sql            # 数值和日期聚合
+    string.sql             # 字符串长度边界
 src/
   index.ts                 # SQL 导出
   generate-sql.ts          # 发现指标并生成批量入口
@@ -95,6 +96,7 @@ tests/
 | `()` | 与其他聚合一起扫描输入 | 表级 `[]` |
 | `(table_name)` | 传入表名读取元数据 | 表级 `[]` |
 | `(column_value)` | 对每列执行聚合 | 单列 `[列名]` |
+| `(column_value, metric_parameters := '{}'::JSON)` | 按默认参数对每列聚合 | 单列 `[列名]` |
 
 指标返回协议规定的带类型值，或返回 SQL NULL 跳过不适用的目标。对适用目标计算出的未定义结果，使用带类型的 `null`。逐列宏须能绑定所有输入类型，内置指标在宏内判断适用类型。可选的 `_data_profiling_parameters_<指标 ID>()` 辅助宏提供实际参数对象，未定义时为 `{}`。内部 `_data_profiling_*` 辅助宏不会被发现为指标。不支持的参数或表宏会使构建失败。自动接入发生在构建时；重新加载完整 SQL 后，新指标才会生效。仅向已有连接注册一个宏不会更新批量入口。
 
@@ -119,7 +121,7 @@ npm pack
 
 ## 已实现指标
 
-`data_profiling(table_name)` 计算 AVA 的全部 7 个默认指标，并保留已有的 `column_count` 和 `missing_count`：
+`data_profiling(table_name)` 计算 AVA 的全部 13 个指标，并保留已有的 `column_count` 和 `missing_count`：
 
 | ID | 适用目标 | 计算口径 |
 | --- | --- | --- |
@@ -130,10 +132,22 @@ npm pack
 | `top_values` | 字符串、布尔列 | 最多 3 个非 NULL 高频值，按频数降序、原生取值升序排列。不同值数 / 总行数超过 0.5 时省略。 |
 | `min`、`max` | 数值、日期时间列 | 有限值的边界；整数、小数保留精确字符串，日期时间保留原生精度。 |
 | `mean` | 数值列 | 有限数值的算术平均值，返回浮点 `number`。 |
+| `duplicate_count` | 所有列 | 非 NULL 数量减去非 NULL 不同值数，统计单列重复次数。 |
+| `min_length`、`max_length` | 字符串列 | 最短和最长 Unicode 字符数，包含空字符串和末尾空格。 |
+| `sum` | 数值列 | 有限值的原生总和，精确整数和小数结果保留带类型的字符串。 |
+| `stddev` | 数值列 | 有限值的样本标准差，分母为 n−1；不足两个值时返回带类型的 `null`。 |
+| `median` | 数值列 | 有限值的原生中位数，保留 DuckDB 的小数位数和舍入行为。 |
 
-字符串列包含 DuckDB 的 UUID 和 ENUM 类型。不支持的类型只返回 NULL 计数。适用的空表列或全 NULL 列返回零计数、空频数列表，以及带类型的 `null` 边界和均值。
+字符串列包含 DuckDB 的 UUID 和 ENUM 类型。不支持的类型只返回 NULL 和重复值计数。适用的空表列或全 NULL 列返回零计数、空频数列表，以及带类型的 `null` 边界和均值。
 
-`top_values` 在 `parameters` 中记录固定的 AVA 默认值 `{ "limit": 3, "maxDistinctRatio": 0.5 }`。结果为带类型的 `object`，包含 `entries` 列表和 `truncated` 布尔值；每项为 `{ value, count }` 对象，所有嵌套字段均使用结果协议的带类型值。适用的类别数超过上限时，`truncated` 为 true。不同值比例的分母包含 NULL 行。统一入口暂不支持修改这些默认参数。
+`top_values` 在 `parameters` 中记录固定的 AVA 默认值 `{ "limit": 3, "maxDistinctRatio": 0.5 }`。结果为带类型的 `object`，包含 `entries` 列表和 `truncated` 布尔值；每项为 `{ value, count }` 对象，所有嵌套字段均使用结果协议的带类型值。适用的类别数超过上限时，`truncated` 为 true。不同值比例的分母包含 NULL 行。批量入口使用这些默认参数，逐个调用时可以传入经过验证的 JSON 参数对象：
+
+```sql
+SELECT data_profiling_top_values(channel, '{"limit": 10, "maxDistinctRatio": 1}'::JSON)
+FROM orders;
+```
+
+`limit` 须为非负的 JavaScript 安全整数，`maxDistinctRatio` 须在 0 到 1 之间；未知参数会被拒绝。为在混合类型表上保留原生小数精度，`sum` 和 `median` 目前通过物化列表执行原生聚合，内存使用随观测数增长。
 
 结果沿用本库协议：日期边界使用 ISO 字符串，计数使用精确整数字符串。接入 AVA 时，由调用方适配为 AVA 的 Unix 毫秒时间戳和 JavaScript 数字。
 
