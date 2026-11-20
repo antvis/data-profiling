@@ -6,7 +6,7 @@ Data Profiling is a TypeScript library for profiling tabular data with DuckDB SQ
 
 ## Quick start
 
-The npm package exports SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
+The npm package generates native DuckDB SQL for AVA and other Node.js consumers. It reuses the caller's DuckDB connection and has no runtime npm dependencies. Running the library or its normal tests requires no Python environment.
 
 For local integration, install this repository in the consuming project:
 
@@ -15,19 +15,37 @@ npm install /absolute/path/to/data_profiling
 ```
 
 ```ts
-import { dataProfilingSQL } from 'data_profiling';
-import type { ProfileResult, ProfileRow } from 'data_profiling';
+import { createProfilingPlan } from 'data_profiling';
+import type { ProfileColumn } from 'data_profiling';
 
-await connection.run(dataProfilingSQL);
-const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
-const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
-  ...row,
-  parameters: JSON.parse(row.parameters),
-  value: JSON.parse(row.value),
-}));
+const columns = (await connection.runAndReadAll(
+  'SELECT name, type FROM pragma_table_info(?)', ['orders'],
+)).getRowObjectsJson() as ProfileColumn[];
+const plan = createProfilingPlan('orders', columns);
+const reader = await connection.runAndReadAll(plan.sql);
+const results = plan.decode(reader.getRowObjectsJson()[0]);
 ```
 
-AVA registers the SQL during internal connection initialization, then calls the macro when profiling. Its public query interface accepts only read-only SELECT statements. AVA adapts the results to its own `Profile` structure.
+AVA already has the column schema and passes it directly to `createProfilingPlan`, avoiding the metadata query. The generated SQL is read-only; no macro registration or connection settings are needed. AVA adapts native aggregate values to its own `Profile` structure.
+
+## Native execution
+
+`createProfilingPlan(tableName, columns, options?)` is the preferred path for Node.js. It compiles type-specific `SUM`, `MEDIAN`, `AVG` and other native aggregates into one query, reuses compatible aggregates and returns one native result row. `plan.decode(reader.getRowObjectsJson()[0])` converts that row to `ProfileResult[]`, preserving exact integers, decimal scale and temporal precision. No source rows are copied into JavaScript.
+
+Supply `options.metrics` to select IDs or configurations such as `{ id: 'top_values', limit: 10, maxDistinctRatio: 1 }`. The last configuration for an ID wins. Omitted metrics mean all 15 built-ins; `[]` means no statistics. The column list can be a subset of the known schema. Identifiers are quoted and metric options are validated before execution. Rebuild the plan if the schema changes.
+
+The plan contains no cached statistics. For repeated computations on the same schema, reuse `plan.sql` or prepare it with `connection.prepare(plan.sql)` and release the statement with `destroySync()` when finished. Each execution reads the current data.
+
+`createProfilingSQL(tableName, columns, options?)` generates the same native aggregates but formats the six-column protocol in SQL; parse its `parameters` and `value` JSON fields as described below. It is useful for SQL-oriented consumers. The original `dataProfilingSQL` bundle and `data_profiling(table_name)` remain compatible, including custom discovered macros; their generic type handling is slower. The native compiler supports the built-in metrics listed below.
+
+Native sums stream without an extra full-column list. Exact distinct counts and native medians still require memory proportional to their data. No approximate counts, sampling or result caches are introduced. Run the equality-checked benchmark with:
+
+```sh
+npm run build
+node benchmarks/native.mjs 200000
+```
+
+It compares the generic macros, native plans, SQL JSON transport and prepared native plans, including unique strings, wider numeric tables and a five-million-row sum under a 16 MB memory limit.
 
 To run the [complete Node.js example](./examples/node.mjs) from this repository after `npm install`:
 
@@ -81,7 +99,8 @@ sql/
     numeric.sql            # Numeric/temporal aggregates
     string.sql             # String length bounds
 src/
-  index.ts                 # SQL export
+  index.ts                 # Public exports
+  profile-query.ts         # Schema-directed native plans and result encoding
   generate-sql.ts          # Discover metrics and generate the batch entry point
   types.ts                 # Protocol types
 dist/                      # Generated JavaScript, declarations and SQL bundle; ignored by Git
@@ -158,13 +177,13 @@ SELECT data_profiling_top_values(channel, '{"limit": 10, "maxDistinctRatio": 1}'
 FROM orders;
 ```
 
-`limit` must be a non-negative JavaScript-safe integer; `maxDistinctRatio` must be between 0 and 1. Unknown options are rejected. Native `sum` and `median` currently aggregate a materialized list to bind safely on heterogeneous tables without losing decimal precision; their memory use grows with the number of observations.
+`limit` must be a non-negative JavaScript-safe integer; `maxDistinctRatio` must be between 0 and 1. Unknown options are rejected. The compatibility macros for `sum` and `median` materialize a list; prefer native plans to avoid this additional allocation.
 
 Results use this library's protocol: temporal bounds are ISO strings rather than AVA's Unix milliseconds, and exact counts are integer strings rather than JavaScript numbers. Consumers adapt these representations when integrating with AVA.
 
-## Planned column selection
+## Macro column selection
 
-The following API is a design example and is not implemented:
+Native plans already accept a schema subset. The following macro API is a design example and is not implemented:
 
 ```sql
 SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);

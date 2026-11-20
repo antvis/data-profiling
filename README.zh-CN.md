@@ -6,7 +6,7 @@ Data Profiling 是一个用 DuckDB SQL 计算指标的 TypeScript 数据画像�
 
 ## 快速开始
 
-npm 包向 AVA 等 Node.js 项目导出 SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
+npm 包为 AVA 等 Node.js 项目生成原生 DuckDB SQL，复用调用方已有的 DuckDB 连接，没有运行时 npm 依赖。运行库和常规测试都不需要 Python 环境。
 
 本地联调时，在调用方项目中安装本仓库：
 
@@ -15,19 +15,37 @@ npm install /absolute/path/to/data_profiling
 ```
 
 ```ts
-import { dataProfilingSQL } from 'data_profiling';
-import type { ProfileResult, ProfileRow } from 'data_profiling';
+import { createProfilingPlan } from 'data_profiling';
+import type { ProfileColumn } from 'data_profiling';
 
-await connection.run(dataProfilingSQL);
-const reader = await connection.runAndReadAll('SELECT * FROM data_profiling(?)', ['orders']);
-const results: ProfileResult[] = (reader.getRowObjectsJson() as ProfileRow[]).map((row) => ({
-  ...row,
-  parameters: JSON.parse(row.parameters),
-  value: JSON.parse(row.value),
-}));
+const columns = (await connection.runAndReadAll(
+  'SELECT name, type FROM pragma_table_info(?)', ['orders'],
+)).getRowObjectsJson() as ProfileColumn[];
+const plan = createProfilingPlan('orders', columns);
+const reader = await connection.runAndReadAll(plan.sql);
+const results = plan.decode(reader.getRowObjectsJson()[0]);
 ```
 
-AVA 在内部连接初始化时注册 SQL，计算画像时调用宏，再将结果适配成自己的 `Profile` 结构。AVA 对外的查询接口只接受只读 SELECT，注册操作不走该接口。
+AVA 已有列 schema，可直接传给 `createProfilingPlan`，省去元数据查询。生成的 SQL 只读，无需注册宏或修改连接设置。AVA 将原生聚合值适配成自己的 `Profile` 结构。
+
+## 原生执行
+
+Node.js 优先使用 `createProfilingPlan(tableName, columns, options?)`。它按列类型直接生成 `SUM`、`MEDIAN`、`AVG` 等原生聚合，在一次查询中复用兼容的聚合，只返回一行原生统计值。`plan.decode(reader.getRowObjectsJson()[0])` 将这一行转换为 `ProfileResult[]`，保留整数、小数位数和时间精度；源数据不进入 JavaScript。
+
+通过 `options.metrics` 选择 ID 或参数配置，例如 `{ id: 'top_values', limit: 10, maxDistinctRatio: 1 }`。相同 ID 以最后一项配置为准。省略时计算全部 15 个内置指标，`[]` 表示不计算统计。列列表可以是已有 schema 的子集。列名会安全引用，指标参数在执行前验证。schema 变化后须重新生成计划。
+
+计划不缓存统计结果。重复计算同一 schema 时，可以复用 `plan.sql`，或用 `connection.prepare(plan.sql)` 预编译，用完后调用 `destroySync()` 释放语句。每次执行都读取当前数据。
+
+`createProfilingSQL(tableName, columns, options?)` 使用相同的原生聚合，在 SQL 内封装外层六列，适合直接消费 SQL 结果的调用方；其 `parameters` 和 `value` 按下文解析。原有 `dataProfilingSQL` 和 `data_profiling(table_name)` 保留兼容，包括自动发现的自定义宏，但通用类型处理开销较高。原生编译器支持下方列出的内置指标。
+
+原生总和采用流式聚合，不额外物化整列列表；精确去重和原生中位数仍需要相应内存。没有使用近似计数、采样或统计结果缓存。可运行带结果一致性断言的基准：
+
+```sh
+npm run build
+node benchmarks/native.mjs 200000
+```
+
+基准比较通用宏、原生计划、SQL JSON 输出和预编译原生计划，覆盖唯一字符串、较宽数值表，以及在 16 MB 内存限制下计算 500 万行总和。
 
 在本仓库执行 `npm install` 后，可以运行[完整的 Node.js 示例](./examples/node.mjs)：
 
@@ -81,7 +99,8 @@ sql/
     numeric.sql            # 数值和日期聚合
     string.sql             # 字符串长度边界
 src/
-  index.ts                 # SQL 导出
+  index.ts                 # 公共导出
+  profile-query.ts         # 按 schema 生成原生计划及封装结果
   generate-sql.ts          # 发现指标并生成批量入口
   types.ts                 # 协议类型
 dist/                      # 构建生成的 JavaScript、类型声明和 SQL，不进 Git
@@ -158,13 +177,13 @@ SELECT data_profiling_top_values(channel, '{"limit": 10, "maxDistinctRatio": 1}'
 FROM orders;
 ```
 
-`limit` 须为非负的 JavaScript 安全整数，`maxDistinctRatio` 须在 0 到 1 之间；未知参数会被拒绝。为在混合类型表上保留原生小数精度，`sum` 和 `median` 目前通过物化列表执行原生聚合，内存使用随观测数增长。
+`limit` 须为非负的 JavaScript 安全整数，`maxDistinctRatio` 须在 0 到 1 之间；未知参数会被拒绝。兼容宏中的 `sum` 和 `median` 仍会物化列表，优先使用原生计划可避免这部分额外分配。
 
 结果沿用本库协议：日期边界使用 ISO 字符串，计数使用精确整数字符串。接入 AVA 时，由调用方适配为 AVA 的 Unix 毫秒时间戳和 JavaScript 数字。
 
-## 规划中的列选择
+## 宏的列选择
 
-以下为接口设计示例，尚未实现：
+原生计划已经支持 schema 子集。以下宏接口仍为设计示例，尚未实现：
 
 ```sql
 SELECT * FROM data_profiling('orders', columns := ['amount', 'quantity']);
