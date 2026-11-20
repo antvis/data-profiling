@@ -1,4 +1,4 @@
-"""Optional FG algorithms. Inputs are grouped counts or selected Parquet columns."""
+"""Optional profiling algorithms. Inputs are grouped counts or selected Parquet columns."""
 import json
 import math
 import os

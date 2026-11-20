@@ -271,7 +271,7 @@ test('numeric aggregates retain native decimal median rounding and exact sums', 
   for (const metric of ['min', 'max', 'mean', 'sum', 'stddev', 'median']) assert.deepEqual(invalid[metric], missing);
 });
 
-test('top values support AVA options and reject invalid parameters', async (t) => {
+test('top values support configured options and reject invalid parameters', async (t) => {
   const connection = await openFixture(t);
   for (const [parameters, expected] of [
     [

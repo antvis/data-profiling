@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { profileFG } from '../dist/index.js';
+import { profile } from '../dist/index.js';
 
 const rows = Number(process.argv[2] ?? 200000);
 assert.ok(Number.isSafeInteger(rows) && rows > 3);
@@ -33,11 +33,11 @@ try {
       },
     ],
   ];
-  if (process.env.FG_PYTHON)
+  if (process.env.PROFILING_PYTHON)
     cases.push([
       'algorithms',
       {
-        python: process.env.FG_PYTHON,
+        python: process.env.PROFILING_PYTHON,
         timeIndex: 'idx',
         types: { value: 'timeseries', text: 'text' },
         metrics: [
@@ -59,7 +59,7 @@ try {
   for (const [name, options] of cases) {
     const run = async () => {
       const start = performance.now();
-      const results = await profileFG(connection, 'input', columns, options);
+      const results = await profile(connection, 'input', columns, options);
       const ms = performance.now() - start;
       assert.deepEqual(results.find((row) => row.metric === 'row_count')?.value, {
         type: 'integer',

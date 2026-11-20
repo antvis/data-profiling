@@ -1,5 +1,5 @@
-export { createProfilingPlan } from './profile';
-export type { ProfileColumn, MetricConfig, ProfilingOptions, ProfilingPlan } from './profile';
+export { createProfilingPlan } from './plan';
+export type { ProfileColumn, MetricConfig, ProfilingOptions, ProfilingPlan } from './plan';
 export type { MetricValue, ProfileResult } from './types';
-export { profileFG, FG_METRICS } from './fg';
-export type { FGOptions, ProfilingConnection } from './fg';
+export { profile, ALL_METRICS } from './profile';
+export type { ProfileOptions, ProfilingConnection } from './profile';

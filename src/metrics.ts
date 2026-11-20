@@ -1,6 +1,6 @@
-import { nativeFGMetrics } from './profile';
+import { additionalMetricIds } from './plan';
 
-export const fgFamilies = {
+export const metricFamilies = {
   frequency: [
     'value_counts',
     'value_counts_by_value',
@@ -103,7 +103,7 @@ export const fgFamilies = {
 } as const;
 
 /** All statistical metrics; I/O and ordered families require explicit column roles/index. */
-export const FG_METRICS: readonly string[] = [
+export const ALL_METRICS: readonly string[] = [
   ...new Set([
     'row_count',
     'column_count',
@@ -120,7 +120,7 @@ export const FG_METRICS: readonly string[] = [
     'sum',
     'stddev',
     'median',
-    ...nativeFGMetrics,
-    ...Object.values(fgFamilies).flat(),
+    ...additionalMetricIds,
+    ...Object.values(metricFamilies).flat(),
   ]),
 ];

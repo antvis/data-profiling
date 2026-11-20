@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { profileFG } from 'data_profiling';
+import { profile } from 'data_profiling';
 
 const instance = await DuckDBInstance.create(':memory:');
 const connection = await instance.connect();
@@ -11,7 +11,7 @@ try {
   const columns = (
     await connection.runAndReadAll("SELECT name,type FROM pragma_table_info('events')")
   ).getRowObjectsJson();
-  const results = await profileFG(
+  const results = await profile(
     connection,
     'events',
     columns,

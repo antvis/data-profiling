@@ -6,15 +6,15 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   createProfilingPlan,
-  profileFG,
-  FG_METRICS,
+  profile,
+  ALL_METRICS,
   type ProfileColumn,
   type ProfileResult,
   type MetricValue,
 } from 'data_profiling';
 import { openFixture } from './fixture';
 
-const python = process.env.FG_PYTHON;
+const python = process.env.PROFILING_PYTHON;
 const integer = (value: string): MetricValue => ({ type: 'integer', value });
 const number = (value: number): MetricValue => ({ type: 'number', value });
 const get = (rows: ProfileResult[], metric: string, column?: string) =>
@@ -24,18 +24,18 @@ const schema = async (connection: Awaited<ReturnType<typeof openFixture>>, table
     await connection.runAndReadAll('SELECT name,type FROM pragma_table_info(?)', [table])
   ).getRowObjectsJson() as ProfileColumn[];
 
-test('FG streaming metrics and Pearson use native aggregates without Python or export', async (t) => {
+test('profiling streaming metrics and Pearson use native aggregates without Python or export', async (t) => {
   const c = await openFixture(t);
-  await c.run('CREATE TABLE fg_native AS SELECT i AS idx, i::DOUBLE - 2 AS x, i * 2 AS y FROM range(5) t(i)');
-  const rows = await profileFG(
+  await c.run('CREATE TABLE profile_native AS SELECT i AS idx, i::DOUBLE - 2 AS x, i * 2 AS y FROM range(5) t(i)');
+  const rows = await profile(
     {
       run: async () => {
         throw new Error('Unexpected export');
       },
       runAndReadAll: (sql) => c.runAndReadAll(sql),
     },
-    'fg_native',
-    await schema(c, 'fg_native'),
+    'profile_native',
+    await schema(c, 'profile_native'),
     {
       python: '/does/not/exist',
       metrics: [
@@ -90,12 +90,12 @@ test('FG streaming metrics and Pearson use native aggregates without Python or e
   );
 });
 
-test('FG missingness includes NaN and retains infinities without changing AVA defaults', async (t) => {
+test('profiling missingness includes NaN and retains infinities without changing finite-only defaults', async (t) => {
   const c = await openFixture(t);
   await c.run(
-    `CREATE TABLE fg_special AS SELECT * FROM (VALUES (1::DOUBLE), (0), ('Infinity'), ('-Infinity'), ('NaN'), (NULL)) t(x)`
+    `CREATE TABLE profile_special AS SELECT * FROM (VALUES (1::DOUBLE), (0), ('Infinity'), ('-Infinity'), ('NaN'), (NULL)) t(x)`
   );
-  const columns = await schema(c, 'fg_special');
+  const columns = await schema(c, 'profile_special');
   const metrics = [
     'observation_count',
     'present_count',
@@ -111,7 +111,7 @@ test('FG missingness includes NaN and retains infinities without changing AVA de
     'infinity_count',
     'infinity_rate',
   ];
-  const rows = await profileFG(c, 'fg_special', columns, { metrics });
+  const rows = await profile(c, 'profile_special', columns, { metrics });
   assert.deepEqual(get(rows, 'present_count', 'x'), integer('4'));
   assert.deepEqual(get(rows, 'missing_count', 'x'), integer('2'));
   assert.deepEqual(get(rows, 'missing_rate', 'x'), number(1 / 3));
@@ -122,17 +122,17 @@ test('FG missingness includes NaN and retains infinities without changing AVA de
   assert.deepEqual(get(rows, 'min', 'x'), { type: 'number', value: '-Infinity' });
   assert.deepEqual(get(rows, 'max', 'x'), { type: 'number', value: 'Infinity' });
   assert.deepEqual(get(rows, 'variance_samp', 'x'), { type: 'number', value: 'NaN' });
-  const ava = createProfilingPlan('fg_special', columns, { metrics: ['null_count', 'min', 'max'] });
-  const original = ava.decode((await c.runAndReadAll(ava.sql)).getRowObjectsJson()[0]);
+  const finite = createProfilingPlan('profile_special', columns, { metrics: ['null_count', 'min', 'max'] });
+  const original = finite.decode((await c.runAndReadAll(finite.sql)).getRowObjectsJson()[0]);
   assert.deepEqual(get(original, 'null_count', 'x'), integer('1'));
   assert.deepEqual(get(original, 'min', 'x'), number(0));
   assert.deepEqual(get(original, 'max', 'x'), number(1));
 });
 
-test('FG table missingness and duplicate groups retain empty-table and group semantics', async (t) => {
+test('profiling table missingness and duplicate groups retain empty-table and group semantics', async (t) => {
   const c = await openFixture(t);
   await c.run(
-    `CREATE TABLE fg_duplicates AS SELECT * FROM (VALUES (1,'a'),(1,'a'),(2,NULL),(2,NULL),(2,NULL),(3,'b')) t(n,s)`
+    `CREATE TABLE profile_duplicates AS SELECT * FROM (VALUES (1,'a'),(1,'a'),(2,NULL),(2,NULL),(2,NULL),(3,'b')) t(n,s)`
   );
   const metrics = [
     'missing_cell_count',
@@ -143,7 +143,7 @@ test('FG table missingness and duplicate groups retain empty-table and group sem
     'duplicate_group_rate',
     'duplicate_group_row_count',
   ];
-  const rows = await profileFG(c, 'fg_duplicates', await schema(c, 'fg_duplicates'), { metrics });
+  const rows = await profile(c, 'profile_duplicates', await schema(c, 'profile_duplicates'), { metrics });
   assert.deepEqual(get(rows, 'missing_cell_count'), integer('3'));
   assert.deepEqual(get(rows, 'missing_cell_rate'), number(0.25));
   assert.deepEqual(get(rows, 'columns_with_missing_count'), integer('1'));
@@ -151,8 +151,8 @@ test('FG table missingness and duplicate groups retain empty-table and group sem
   assert.deepEqual(get(rows, 'duplicate_group_count'), integer('2'));
   assert.deepEqual(get(rows, 'duplicate_group_rate'), number(1 / 3));
   assert.deepEqual(get(rows, 'duplicate_group_row_count'), { type: 'list', value: [integer('3'), integer('2')] });
-  await c.run('DELETE FROM fg_duplicates');
-  const empty = await profileFG(c, 'fg_duplicates', await schema(c, 'fg_duplicates'), { metrics });
+  await c.run('DELETE FROM profile_duplicates');
+  const empty = await profile(c, 'profile_duplicates', await schema(c, 'profile_duplicates'), { metrics });
   for (const metric of metrics)
     assert.deepEqual(
       get(empty, metric),
@@ -165,11 +165,11 @@ test('FG table missingness and duplicate groups retain empty-table and group sem
 });
 
 test(
-  'all FG metric families execute with weighted text, file/image I/O, correlations and time series',
+  'all profiling metric families execute with weighted text, file/image I/O, correlations and time series',
   { skip: !python },
   async (t) => {
     const c = await openFixture(t);
-    const directory = await mkdtemp(join(tmpdir(), 'fg-test-'));
+    const directory = await mkdtemp(join(tmpdir(), 'profiling-test-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     execFileSync(python!, [
       '-c',
@@ -177,18 +177,18 @@ test(
 from PIL import Image
 import sys
 p=Path(sys.argv[1]);(p/'file.txt').write_text('hello world')
-im=Image.new('RGB',(6,4),(0,0,255));exif=Image.Exif();exif[271]='FG test';im.save(p/'image.jpg',exif=exif)
+im=Image.new('RGB',(6,4),(0,0,255));exif=Image.Exif();exif[271]='profiling test';im.save(p/'image.jpg',exif=exif)
 `,
       directory,
     ]);
     await c.run(
-      `CREATE TABLE fg_all AS SELECT i AS idx, sin(i*.7)+i%3 AS ts, i::DOUBLE AS x, i*2.0 AS y,
+      `CREATE TABLE profile_all AS SELECT i AS idx, sin(i*.7)+i%3 AS ts, i::DOUBLE AS x, i*2.0 AS y,
     i%2=0 AS b, 'a'||(i%3) AS cat, 'b'||(i%2) AS cat2, 'Hello 中文 😀 world!' AS s,
     'https://example.com/p?q=1#f' AS url, '/a/b.txt' AS path, ?::VARCHAR AS file, ?::VARCHAR AS image,
     DATE '2026-01-01' + i::INTEGER AS day FROM range(128) t(i)`,
       [join(directory, 'file.txt'), join(directory, 'image.jpg')]
     );
-    const rows = await profileFG(c, 'fg_all', await schema(c, 'fg_all'), {
+    const rows = await profile(c, 'profile_all', await schema(c, 'profile_all'), {
       python,
       timeIndex: 'idx',
       types: { ts: 'timeseries', s: 'text', url: 'url', path: 'path', file: 'file', image: 'image' },
@@ -196,7 +196,7 @@ im=Image.new('RGB',(6,4),(0,0,255));exif=Image.Exif();exif[271]='FG test';im.sav
     });
     const present = new Set(rows.map((row) => row.metric));
     assert.deepEqual(
-      FG_METRICS.filter((metric) => !present.has(metric)),
+      ALL_METRICS.filter((metric) => !present.has(metric)),
       []
     );
     assert.equal(new Set(rows.map((row) => JSON.stringify([row.columns, row.metric]))).size, rows.length);
@@ -222,12 +222,12 @@ im=Image.new('RGB',(6,4),(0,0,255));exif=Image.Exif();exif[271]='FG test';im.sav
 );
 
 test(
-  'FG optional stages handle empty inputs, invalid dates and missing files explicitly',
+  'profiling optional stages handle empty inputs, invalid dates and missing files explicitly',
   { skip: !python },
   async (t) => {
     const c = await openFixture(t);
-    await c.run(`CREATE TABLE fg_dates AS SELECT * FROM (VALUES ('2026-01-01'),('bad'),('bad'),(NULL)) t(d)`);
-    const rows = await profileFG(c, 'fg_dates', await schema(c, 'fg_dates'), {
+    await c.run(`CREATE TABLE profile_dates AS SELECT * FROM (VALUES ('2026-01-01'),('bad'),('bad'),(NULL)) t(d)`);
+    const rows = await profile(c, 'profile_dates', await schema(c, 'profile_dates'), {
       python,
       types: { d: 'date' },
       metrics: ['invalid_date_distinct_count', 'invalid_date_count', 'invalid_date_rate', 'datetime_histogram'],
@@ -235,17 +235,17 @@ test(
     assert.deepEqual(get(rows, 'invalid_date_distinct_count', 'd'), integer('1'));
     assert.deepEqual(get(rows, 'invalid_date_count', 'd'), integer('2'));
     assert.deepEqual(get(rows, 'invalid_date_rate', 'd'), number(0.5));
-    await c.run('DELETE FROM fg_dates');
-    const empty = await profileFG(c, 'fg_dates', await schema(c, 'fg_dates'), {
+    await c.run('DELETE FROM profile_dates');
+    const empty = await profile(c, 'profile_dates', await schema(c, 'profile_dates'), {
       python,
       types: { d: 'date' },
       metrics: ['invalid_date_count', 'value_counts', 'datetime_histogram'],
     });
     assert.deepEqual(get(empty, 'invalid_date_count', 'd'), integer('0'));
     assert.deepEqual(get(empty, 'value_counts', 'd'), { type: 'list', value: [] });
-    await c.run(`INSERT INTO fg_dates VALUES ('/does/not/exist')`);
+    await c.run(`INSERT INTO profile_dates VALUES ('/does/not/exist')`);
     await assert.rejects(
-      profileFG(c, 'fg_dates', await schema(c, 'fg_dates'), {
+      profile(c, 'profile_dates', await schema(c, 'profile_dates'), {
         python,
         types: { d: 'file' },
         metrics: ['file_size_bytes'],
@@ -255,10 +255,10 @@ test(
   }
 );
 
-test('FG classifies complex types and prototype-like column names from the shared native schema', async (t) => {
+test('profiling classifies complex types and prototype-like column names from the shared native schema', async (t) => {
   const c = await openFixture(t);
-  await c.run(`CREATE TABLE fg_names AS SELECT [1] AS "constructor", 2 AS "__proto__", 'x' AS s`);
-  const rows = await profileFG(c, 'fg_names', await schema(c, 'fg_names'), {
+  await c.run(`CREATE TABLE profile_names AS SELECT [1] AS "constructor", 2 AS "__proto__", 'x' AS s`);
+  const rows = await profile(c, 'profile_names', await schema(c, 'profile_names'), {
     python: '/does/not/exist',
     types: { s: 'text' },
     metrics: ['profiling_type', 'present_count', 'singleton_count', 'pearson_r'],
@@ -270,29 +270,31 @@ test('FG classifies complex types and prototype-like column names from the share
     rows.some((row) => row.metric === 'pearson_r'),
     false
   );
-  const metadata = createProfilingPlan('fg_names', await schema(c, 'fg_names'), {
+  const metadata = createProfilingPlan('profile_names', await schema(c, 'profile_names'), {
     metrics: ['profiling_type', 'declared_type'],
   });
   assert.doesNotMatch(metadata.sql, /query_table/);
-  await c.run('CREATE TABLE fg_constant AS SELECT 1.0 AS n FROM range(5)');
-  const constant = await profileFG(c, 'fg_constant', await schema(c, 'fg_constant'), {
+  await c.run('CREATE TABLE profile_constant AS SELECT 1.0 AS n FROM range(5)');
+  const constant = await profile(c, 'profile_constant', await schema(c, 'profile_constant'), {
     metrics: ['skewness', 'excess_kurtosis'],
   });
   assert.deepEqual(get(constant, 'skewness', 'n'), number(0));
   assert.deepEqual(get(constant, 'excess_kurtosis', 'n'), number(0));
 });
 
-test('native FG quantiles and histograms preserve NumPy boundary conventions without export', async (t) => {
+test('native profiling quantiles and histograms preserve NumPy boundary conventions without export', async (t) => {
   const c = await openFixture(t);
-  await c.run(`CREATE TABLE fg_bins AS SELECT * FROM (VALUES (0::DOUBLE),(1),(2),(3),('Infinity'),('NaN'),(NULL))t(n)`);
-  const columns = await schema(c, 'fg_bins');
+  await c.run(
+    `CREATE TABLE profile_bins AS SELECT * FROM (VALUES (0::DOUBLE),(1),(2),(3),('Infinity'),('NaN'),(NULL))t(n)`
+  );
+  const columns = await schema(c, 'profile_bins');
   const connection = {
     run: async () => {
       throw Error('Unexpected export');
     },
     runAndReadAll: (sql: string) => c.runAndReadAll(sql),
   };
-  const rows = await profileFG(connection, 'fg_bins', columns, {
+  const rows = await profile(connection, 'profile_bins', columns, {
     metrics: ['quantiles', 'numeric_histogram', 'chi_squared_statistic'],
     python: '/does/not/exist',
     bins: 3,
@@ -311,7 +313,7 @@ test('native FG quantiles and histograms preserve NumPy boundary conventions wit
     type: 'object',
     value: { '0': number(0), '0.5': number(2), '1': { type: 'number', value: 'Infinity' } },
   });
-  const density = await profileFG(connection, 'fg_bins', columns, {
+  const density = await profile(connection, 'profile_bins', columns, {
     metrics: ['numeric_histogram'],
     bins: 3,
     density: true,
@@ -323,8 +325,8 @@ test('native FG quantiles and histograms preserve NumPy boundary conventions wit
       edges: { type: 'list', value: [number(0), number(1), number(2), number(3)] },
     },
   });
-  await c.run('DELETE FROM fg_bins');
-  const empty = await profileFG(connection, 'fg_bins', columns, {
+  await c.run('DELETE FROM profile_bins');
+  const empty = await profile(connection, 'profile_bins', columns, {
     metrics: ['quantiles', 'numeric_histogram', 'chi_squared_p_value'],
   });
   assert.deepEqual(get(empty, 'numeric_histogram', 'n'), {
@@ -334,7 +336,7 @@ test('native FG quantiles and histograms preserve NumPy boundary conventions wit
   assert.deepEqual(get(empty, 'chi_squared_p_value', 'n'), number(0));
 });
 
-test('FG validates requests before I/O and cleans exports when a worker fails', async (t) => {
+test('profiling validates requests before I/O and cleans exports when a worker fails', async (t) => {
   const c = await openFixture(t);
   const columns = await schema(c, 'sample');
   for (const options of [
@@ -348,7 +350,7 @@ test('FG validates requests before I/O and cleans exports when a worker fails', 
     { autolag: 'other' },
     { metrics: [{ id: 'mad', unknown: 1 }] },
   ]) {
-    await assert.rejects(profileFG(c, 'sample', columns, options as never));
+    await assert.rejects(profile(c, 'sample', columns, options as never));
   }
   const paths: string[] = [];
   const connection = {
@@ -360,16 +362,16 @@ test('FG validates requests before I/O and cleans exports when a worker fails', 
     },
   };
   await assert.rejects(
-    profileFG(connection, 'sample', columns, { metrics: ['word_counts'], python: '/does/not/exist' }),
+    profile(connection, 'sample', columns, { metrics: ['word_counts'], python: '/does/not/exist' }),
     /ENOENT/
   );
   assert.ok(paths.length);
   for (const path of paths) await assert.rejects(access(dirname(path)));
 });
 
-test('native FG frequencies preserve integer precision, ties and empty values without Python', async (t) => {
+test('native profiling frequencies preserve integer precision, ties and empty values without Python', async (t) => {
   const c = await openFixture(t);
-  await c.run(`CREATE TABLE fg_frequency AS SELECT * FROM (VALUES
+  await c.run(`CREATE TABLE profile_frequency AS SELECT * FROM (VALUES
     ('9007199254740993'::BIGINT, true, 'a'), ('9007199254740993', false, 'a'),
     ('9007199254740994', false, ''), (NULL,NULL,NULL)) t(n,b,s)`);
   const metrics = [
@@ -381,7 +383,7 @@ test('native FG frequencies preserve integer precision, ties and empty values wi
     'boolean_mode',
     'boolean_mode_count',
   ];
-  const rows = await profileFG(c, 'fg_frequency', await schema(c, 'fg_frequency'), {
+  const rows = await profile(c, 'profile_frequency', await schema(c, 'profile_frequency'), {
     metrics,
     python: '/does/not/exist',
   });
@@ -395,8 +397,8 @@ test('native FG frequencies preserve integer precision, ties and empty values wi
       type: 'object',
       value: { value: integer('9007199254740993'), count: integer('2') },
     });
-  await c.run('DELETE FROM fg_frequency');
-  const empty = await profileFG(c, 'fg_frequency', await schema(c, 'fg_frequency'), {
+  await c.run('DELETE FROM profile_frequency');
+  const empty = await profile(c, 'profile_frequency', await schema(c, 'profile_frequency'), {
     metrics,
     python: '/does/not/exist',
   });
@@ -406,14 +408,14 @@ test('native FG frequencies preserve integer precision, ties and empty values wi
 });
 
 test(
-  'FG grouped quantiles preserve large integers and decimals and workers observe changes',
+  'profiling grouped quantiles preserve large integers and decimals and workers observe changes',
   { skip: !python },
   async (t) => {
     const c = await openFixture(t);
-    await c.run(`CREATE TABLE fg_precise AS SELECT
+    await c.run(`CREATE TABLE profile_precise AS SELECT
     '1267650600228229401496703205376'::HUGEINT + i AS h,
     '12345678901234567890.123456780'::DECIMAL(38,9)+i*.000000001 AS d FROM range(5)t(i)`);
-    const rows = await profileFG(c, 'fg_precise', await schema(c, 'fg_precise'), {
+    const rows = await profile(c, 'profile_precise', await schema(c, 'profile_precise'), {
       python,
       metrics: ['quantiles'],
       quantiles: [0.5],
@@ -425,16 +427,16 @@ test(
     if (h?.type === 'object') assert.deepEqual(h.value['0.5'], integer('1267650600228229401496703205378'));
     if (d?.type === 'object')
       assert.deepEqual(d.value['0.5'], { type: 'decimal', value: '12345678901234567890.1234567820' });
-    const directory = await mkdtemp(join(tmpdir(), 'fg-file-cache-'));
+    const directory = await mkdtemp(join(tmpdir(), 'profiling-file-cache-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'file');
     const { writeFile } = await import('node:fs/promises');
     await writeFile(path, 'a');
-    await c.run('CREATE TABLE fg_changed(p VARCHAR)');
-    await c.run('INSERT INTO fg_changed VALUES (?)', [path]);
-    const columns = await schema(c, 'fg_changed');
+    await c.run('CREATE TABLE profile_changed(p VARCHAR)');
+    await c.run('INSERT INTO profile_changed VALUES (?)', [path]);
+    const columns = await schema(c, 'profile_changed');
     const read = () =>
-      profileFG(c, 'fg_changed', columns, { python, metrics: ['file_size_bytes'], types: { p: 'file' } });
+      profile(c, 'profile_changed', columns, { python, metrics: ['file_size_bytes'], types: { p: 'file' } });
     const first = get(await read(), 'file_size_bytes', 'p');
     await writeFile(path, 'longer');
     const second = get(await read(), 'file_size_bytes', 'p');
@@ -445,14 +447,14 @@ test(
 );
 
 test(
-  'FG ordered stages detect gaps, parse date bounds and recover after a failed request',
+  'profiling ordered stages detect gaps, parse date bounds and recover after a failed request',
   { skip: !python },
   async (t) => {
     const c = await openFixture(t);
     await c.run(
-      `CREATE TABLE fg_gaps AS SELECT * FROM (VALUES (0,1.0),(1,2.0),(2,NULL),(50,3.0),(51,4.0),(52,5.0))t(idx,n)`
+      `CREATE TABLE profile_gaps AS SELECT * FROM (VALUES (0,1.0),(1,2.0),(2,NULL),(50,3.0),(51,4.0),(52,5.0))t(idx,n)`
     );
-    const rows = await profileFG(c, 'fg_gaps', await schema(c, 'fg_gaps'), {
+    const rows = await profile(c, 'profile_gaps', await schema(c, 'profile_gaps'), {
       python,
       timeIndex: 'idx',
       types: { n: 'timeseries' },
@@ -465,13 +467,13 @@ test(
       value: [{ type: 'list', value: [integer('1'), integer('50')] }],
     });
     assert.deepEqual(get(rows, 'is_strictly_increasing', 'n'), { type: 'boolean', value: true });
-    await c.run(`CREATE TABLE fg_bounds AS SELECT * FROM (VALUES ('2026-01-01'),('2026-01-03'),('bad'))t(d)`);
-    const columns = await schema(c, 'fg_bounds');
+    await c.run(`CREATE TABLE profile_bounds AS SELECT * FROM (VALUES ('2026-01-01'),('2026-01-03'),('bad'))t(d)`);
+    const columns = await schema(c, 'profile_bounds');
     await assert.rejects(
-      profileFG(c, 'fg_bounds', columns, { python, types: { d: 'file' }, metrics: ['file_size_bytes'] }),
+      profile(c, 'profile_bounds', columns, { python, types: { d: 'file' }, metrics: ['file_size_bytes'] }),
       /FileNotFoundError/
     );
-    const parsed = await profileFG(c, 'fg_bounds', columns, {
+    const parsed = await profile(c, 'profile_bounds', columns, {
       python,
       types: { d: 'date' },
       metrics: ['min_timestamp', 'max_timestamp', 'time_span'],

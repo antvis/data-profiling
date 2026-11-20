@@ -1,5 +1,5 @@
-import { kind, scalar, type ProfileColumn } from './profile';
-import type { FGOptions, ProfilingConnection } from './fg';
+import { kind, scalar, type ProfileColumn } from './plan';
+import type { ProfileOptions, ProfilingConnection } from './profile';
 import type { MetricValue, ProfileResult } from './types';
 
 export async function nativeDistributions(
@@ -7,7 +7,7 @@ export async function nativeDistributions(
   table: string,
   columns: readonly ProfileColumn[],
   requested: ReadonlyMap<string, unknown>,
-  options: FGOptions
+  options: ProfileOptions
 ) {
   const results: ProfileResult[] = [];
   const completed = new Map<string, Set<string>>();
