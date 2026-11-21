@@ -16,3 +16,15 @@ export interface ProfileResult {
   parameters: Record<string, unknown>;
   value: MetricValue;
 }
+
+export interface ProfileSkip {
+  table_name: string;
+  columns: string[];
+  metric: string;
+  reason: 'unsupported_type' | 'cardinality_limit';
+}
+
+export interface ProfileDiagnostics {
+  results: ProfileResult[];
+  skipped: ProfileSkip[];
+}

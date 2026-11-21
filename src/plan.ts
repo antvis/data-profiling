@@ -1,4 +1,4 @@
-import type { MetricValue, ProfileResult } from './types';
+import type { MetricValue, ProfileResult, ProfileSkip, ProfileDiagnostics } from './types';
 
 export type ProfileColumn = { name: string; type: string };
 export type MetricConfig = string | { id: string; [option: string]: unknown };
@@ -143,6 +143,7 @@ export interface ProfilingPlan {
   sql: string;
   metrics: readonly PlannedMetric[];
   decode(row: Record<string, unknown>): ProfileResult[];
+  decodeWithDiagnostics(row: Record<string, unknown>): ProfileDiagnostics;
 }
 
 export function scalar(type: MetricValue['type'], raw: unknown): MetricValue {
@@ -207,6 +208,7 @@ export function createProfilingPlan(
       : identifier(field.name);
   const aggregates = new Map<string, string>();
   const planned: PlannedMetric[] = [];
+  const omitted: ProfileSkip[] = [];
   const aggregate = (expression: string): string => {
     if (!aggregates.has(expression)) aggregates.set(expression, `m${aggregates.size}`);
     return aggregates.get(expression)!;
@@ -259,6 +261,7 @@ export function createProfilingPlan(
       const { name, type } = field;
       const col = input(field);
       const logicalType = kind(type);
+      const skip = () => omitted.push({ table_name: tableName, columns: [name], metric: id, reason: 'unsupported_type' });
       const distinct = `count(DISTINCT ${col})`;
       let expression: string;
       switch (id) {
@@ -272,7 +275,7 @@ export function createProfilingPlan(
           expression = `coalesce((count(*) - count(${col})) / nullif(count(*), 0), 0)`;
           break;
         case 'distinct_rate':
-          if (logicalType === 'unknown') continue;
+          if (logicalType === 'unknown') { skip(); continue; }
           expression = `coalesce(${distinct} / nullif(count(${col}), 0), 0)`;
           break;
         case 'is_unique':
@@ -300,7 +303,7 @@ export function createProfilingPlan(
         case 'zero_rate':
         case 'infinity_count':
         case 'infinity_rate': {
-          if (logicalType !== 'numeric') continue;
+          if (logicalType !== 'numeric') { skip(); continue; }
           const predicate = id.startsWith('negative')
             ? `${col} < 0`
             : id.startsWith('zero')
@@ -314,16 +317,16 @@ export function createProfilingPlan(
         }
         case 'mean_length':
         case 'median_length':
-          if (logicalType !== 'string') continue;
+          if (logicalType !== 'string') { skip(); continue; }
           expression = `${id === 'mean_length' ? 'avg' : 'median'}(length(${col}::VARCHAR))`;
           break;
         case 'min_timestamp':
         case 'max_timestamp':
-          if (logicalType !== 'date') continue;
+          if (logicalType !== 'date') { skip(); continue; }
           expression = `${id === 'min_timestamp' ? 'min' : 'max'}(${col}) FILTER (WHERE isfinite(${col}))`;
           break;
         case 'time_span': {
-          if (logicalType !== 'date') continue;
+          if (logicalType !== 'date') { skip(); continue; }
           const value = /^(DATE)$/i.test(type)
             ? `${col}`
             : /^TIMESTAMP_NS$/i.test(type)
@@ -342,16 +345,16 @@ export function createProfilingPlan(
           expression = `count(${col}) - ${distinct}`;
           break;
         case 'distinct_count':
-          if (logicalType === 'unknown') continue;
+          if (logicalType === 'unknown') { skip(); continue; }
           expression = distinct;
           break;
         case 'min_length':
         case 'max_length':
-          if (logicalType !== 'string') continue;
+          if (logicalType !== 'string') { skip(); continue; }
           expression = `${id === 'min_length' ? 'min' : 'max'}(length(${col}::VARCHAR))`;
           break;
         case 'top_values': {
-          if (logicalType !== 'string' && logicalType !== 'boolean') continue;
+          if (logicalType !== 'string' && logicalType !== 'boolean') { skip(); continue; }
           const count = aggregate(distinct);
           const top = aggregate(`CASE WHEN ${distinct} > count(*) * ${maxDistinctRatio} THEN NULL
             ELSE coalesce(first((SELECT list(struct_pack(value := v, count := n) ORDER BY n DESC, v ASC)
@@ -361,7 +364,10 @@ export function createProfilingPlan(
           continue;
         }
         default: {
-          if (logicalType !== 'numeric' && !(['min', 'max'].includes(id) && logicalType === 'date')) continue;
+          if (logicalType !== 'numeric' && !(['min', 'max'].includes(id) && logicalType === 'date')) {
+            skip();
+            continue;
+          }
           const fn =
             (
               { mean: 'avg', stddev: 'stddev_samp', variance_samp: 'var_samp', excess_kurtosis: 'kurtosis' } as Record<
@@ -424,53 +430,61 @@ export function createProfilingPlan(
     if (type === 'timestamptz') return `strftime(${alias} AT TIME ZONE 'UTC', '%Y-%m-%dT%H:%M:%S.%fZ') AS ${alias}`;
     return alias;
   });
+  const decode = (row: Record<string, unknown>, skipped?: ProfileSkip[]): ProfileResult[] => {
+    const results: ProfileResult[] = [];
+    for (const metric of planned) {
+      if (!Object.hasOwn(row, metric.alias)) throw new Error(`Missing aggregate: ${metric.alias}`);
+      const raw = row[metric.alias];
+      let value: MetricValue;
+      if (metric.metric === 'top_values') {
+        if (raw == null) {
+          skipped?.push({ table_name: tableName, columns: [metric.column!.name], metric: metric.metric, reason: 'cardinality_limit' });
+          continue;
+        }
+        if (!Array.isArray(raw) || !Object.hasOwn(row, metric.distinctAlias!))
+          throw new Error('Invalid top_values aggregate');
+        value = {
+          type: 'object',
+          value: {
+            entries: {
+              type: 'list',
+              value: raw.map((entry) => {
+                if (!entry || !Object.hasOwn(entry, 'value') || !Object.hasOwn(entry, 'count'))
+                  throw new Error('Invalid top_values entry');
+                return {
+                  type: 'object',
+                  value: {
+                    value: scalar(kind(metric.column!.type) === 'boolean' ? 'boolean' : 'string', entry.value),
+                    count: scalar('integer', entry.count),
+                  },
+                };
+              }),
+            },
+            truncated: {
+              type: 'boolean',
+              value: Number(row[metric.distinctAlias!]) > Number(metric.parameters.limit),
+            },
+          },
+        };
+      } else value = scalar(metric.type, raw);
+      results.push({
+        protocol_version: 1,
+        table_name: tableName,
+        columns: metric.column ? [metric.column.name] : [],
+        metric: metric.metric,
+        parameters: { ...metric.parameters },
+        value,
+      });
+    }
+    return results;
+  };
   return {
     sql: projected.length ? `SELECT ${projected.join(', ')} FROM (${query})` : 'SELECT 1 WHERE false',
     metrics: planned,
-    decode(row) {
-      const results: ProfileResult[] = [];
-      for (const metric of planned) {
-        if (!Object.hasOwn(row, metric.alias)) throw new Error(`Missing aggregate: ${metric.alias}`);
-        const raw = row[metric.alias];
-        let value: MetricValue;
-        if (metric.metric === 'top_values') {
-          if (raw == null) continue;
-          if (!Array.isArray(raw) || !Object.hasOwn(row, metric.distinctAlias!))
-            throw new Error('Invalid top_values aggregate');
-          value = {
-            type: 'object',
-            value: {
-              entries: {
-                type: 'list',
-                value: raw.map((entry) => {
-                  if (!entry || !Object.hasOwn(entry, 'value') || !Object.hasOwn(entry, 'count'))
-                    throw new Error('Invalid top_values entry');
-                  return {
-                    type: 'object',
-                    value: {
-                      value: scalar(kind(metric.column!.type) === 'boolean' ? 'boolean' : 'string', entry.value),
-                      count: scalar('integer', entry.count),
-                    },
-                  };
-                }),
-              },
-              truncated: {
-                type: 'boolean',
-                value: Number(row[metric.distinctAlias!]) > Number(metric.parameters.limit),
-              },
-            },
-          };
-        } else value = scalar(metric.type, raw);
-        results.push({
-          protocol_version: 1,
-          table_name: tableName,
-          columns: metric.column ? [metric.column.name] : [],
-          metric: metric.metric,
-          parameters: { ...metric.parameters },
-          value,
-        });
-      }
-      return results;
+    decode,
+    decodeWithDiagnostics(row) {
+      const skipped = omitted.map((item) => ({ ...item, columns: [...item.columns] }));
+      return { results: decode(row, skipped), skipped };
     },
   };
 }
