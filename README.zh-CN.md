@@ -104,6 +104,18 @@ await writeFile('orders-report.html', html, 'utf8');
 
 ## 开发
 
+### 官网在线体验
+
+```sh
+npm install
+npm run dev:site
+npm run build:site
+```
+
+`site/` 是静态体验界面，构建到 `build/`，与库的 `dist/` 输出分开。默认载入 128 条中文订单，左侧分页预览数据，右侧复用 `renderReport`。支持上传 CSV（含表头）、JSON、Parquet，最大 20 MB、200 列；支持切换常用/详细统计、分箱数、相关性、语言和主题，并导出 HTML 报告。
+
+数据在浏览器内由 DuckDB-Wasm 计算，不发送到服务器。计算引擎首次从固定版本的 CDN 载入，需要网络。体验页复用原生计划和分布计算，不运行 Python 专项算法；相关性计算覆盖前 20 个数值列。预览每页 25 行，统计使用完整数据。上传解析失败会回滚并保留当前数据。
+
 Node.js 22.13 或以上：
 
 ```sh

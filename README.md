@@ -104,6 +104,18 @@ Specialized algorithms export only grouped values or required raw columns throug
 
 ## Development
 
+### Website playground
+
+```sh
+npm install
+npm run dev:site
+npm run build:site
+```
+
+The static playground in `site/` builds to `build/`, separately from the library's `dist/`. It starts with 128 sample orders and shows paginated data on the left and the existing `renderReport` output on the right. Upload CSV (with headers), JSON or Parquet up to 20 MB and 200 columns. Change the metric scope, histogram bins, correlations, language and theme, or download an offline HTML report.
+
+DuckDB-Wasm computes data in the browser; uploaded data is not sent to a server. The pinned engine loads from a CDN on first use and needs a network connection. The playground reuses native plans and distributions without Python algorithms. Correlations cover the first 20 numeric columns. Each preview page shows 25 rows; statistics use the full dataset. Failed imports roll back and retain the current dataset.
+
 Node.js 22.13 or later:
 
 ```sh
