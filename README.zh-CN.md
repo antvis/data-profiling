@@ -2,14 +2,14 @@
 
 # Data Profiling
 
-面向数据平台、分析工具和应用的数据画像计算库。输入 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。
+为 AVA 提供数据画像计算能力的基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
 
 支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标目录与计算口径](./docs/metrics.md)。
 
 ## 计算画像
 
 ```ts
-import { profile } from 'data_profiling';
+import { BASIC_METRICS, profile } from 'data_profiling';
 import type { ProfileColumn } from 'data_profiling';
 
 const columns = (await connection.runAndReadAll(
@@ -17,12 +17,13 @@ const columns = (await connection.runAndReadAll(
 )).getRowObjectsJson() as ProfileColumn[];
 
 const results = await profile(connection, 'orders', columns, {
-  metrics: ['row_count', 'missing_rate', 'distinct_count',
-    'min', 'max', 'mean', 'stddev_samp'],
+  metrics: BASIC_METRICS,
 });
 ```
 
 复用调用方连接；已有 schema 时直接传入。`metrics` 决定所需统计，省略时使用完整的 `ALL_METRICS` 目录，`[]` 返回空结果。重复 ID 以最后一项配置为准。列列表可以是子集；类型来自 schema 或显式角色。
+
+`BASIC_METRICS` 对应 AVA 默认的七个指标 ID：`row_count`、`null_count`、`distinct_count`、`top_values`、`min`、`max`、`mean`。它们使用原生 SQL，不启动 Python、不导出原始数据。精确去重和高频值仍需要随数据基数增长的状态，可进一步缩减指标。现有两个入口的默认行为不变。详见 [AVA 接入说明](./docs/ava.md)和[消费端示例](./examples/ava.mjs)。
 
 计数、边界、求和、方差、长度、频数、普通数值分位与直方图等直接在 DuckDB 内执行。字符分析、高精度分位、部分检验、文件和时序等专项算法使用可选 Python 环境：
 
@@ -60,6 +61,8 @@ const results = plan.decode(reader.getRowObjectsJson()[0]);
 
 此入口接受可直接编译的指标，默认计算 15 项基础统计。`plan.sql` 返回一行原生统计；`plan.decode` 转为 `ProfileResult[]`，也可根据 `plan.metrics` 读取原生值。完整目录及需要额外阶段的统计通过 `profile` 执行。
 
+需要明确原生指标的计算覆盖时，使用 `plan.decodeWithDiagnostics(row)`，返回 `{ results, skipped }`。跳过项包含表、目标字段、指标及 `unsupported_type` 或 `cardinality_limit` 原因。已计算但无定义的结果仍以带类型的 `null` 留在 `results`；未请求的指标不出现在两个列表中。请求无效、传输异常和执行失败仍会抛错。
+
 schema 不变时可复用计划，通过 `connection.prepare(plan.sql)` 复用预编译语句，用完后调用 `destroySync()`。每次执行读取当前数据；schema 变化后重新生成计划。表引用采用 DuckDB 完整表名，如 `sales.orders`，特殊名称分别加双引号。
 
 ## 渲染离线报告
@@ -90,7 +93,7 @@ await writeFile('orders-report.html', html, 'utf8');
 
 每条 `ProfileResult` 包含 `protocol_version`、`table_name`、`columns`、`metric`、`parameters` 和带 `type` / `value` 标签的 `value`。表级目标为 `[]`，单列为 `[name]`，列对为 `[a, b]`。
 
-整数和小数以带类型的字符串保留精度；浮点结果使用数字或 `NaN`、`Infinity`、`-Infinity` 字符串。日期时间保留原生精度，带时区时间转为 UTC；时长使用纳秒。未定义结果使用带类型的 `null`，不适用或跳过的指标不返回记录。
+整数和小数以带类型的字符串保留精度；有损整数传输及格式错误的标量会被拒绝，包括频数及直方图计数。浮点结果使用数字或 `NaN`、`Infinity`、`-Infinity` 字符串。日期时间保留原生精度，带时区时间转为 UTC；时长使用纳秒。未定义结果使用带类型的 `null`，不适用或跳过的指标不返回记录。
 
 `profile` 将浮点 NaN 计为缺失，数值边界保留无穷值。编译入口默认 `semantics: 'finite'`，缺失只计 SQL NULL，数值聚合排除非有限值；设置 `'extended'` 可使用前述 NaN 和无穷值口径。小数中位数及离散度沿用 DuckDB 原生精度。
 
@@ -100,7 +103,7 @@ await writeFile('orders-report.html', html, 'utf8');
 
 原生聚合由调用方连接控制并行度和内存。精确去重、完整频数和中位数需要相应状态；通过 `metrics` 选择所需指标，可控制计算与输出成本。
 
-专项算法只导出分组后的值或必需的原始列，通过临时 Parquet 交换。同一路径在单次请求中复用读取结果。Python worker 复用已加载算法，空闲 30 秒后退出；每次请求重新计算统计和文件元数据。成功和失败都会清理临时文件。需要各阶段共享一致快照时，使用调用方事务。
+专项算法只导出分组后的值或必需的原始列，通过临时 Parquet 交换。列对指标不足两个适用字段时不启动 Python；秩相关只导出数值列。同一路径在单次请求中复用读取结果。Python worker 复用已加载算法，空闲 30 秒后退出；每次请求重新计算统计和文件元数据。成功和失败都会清理临时文件。需要各阶段共享一致快照时，使用调用方事务。
 
 ## 开发
 
@@ -111,6 +114,7 @@ npm install
 npm test
 node examples/node.mjs
 node examples/profile.mjs
+node examples/ava.mjs
 PROFILING_PYTHON=.venv/bin/python npm test
 node examples/profile.mjs .venv/bin/python
 npm run bench -- 200000
@@ -120,4 +124,4 @@ npm pack
 
 测试覆盖各指标族、精度、空表、参数、预编译复用和受限内存。基准覆盖混合表、唯一字符串、宽数值表、专项组合，以及 16 MB 限制下的 500 万行求和。测量基于本机内存表。
 
-0.4.0 使用 `profile`、`ALL_METRICS`、`ProfileOptions` 作为通用执行 API；编译入口使用 `semantics: 'finite' | 'extended'`。
+0.5.0 新增 `BASIC_METRICS` 和原生指标跳过诊断。现有 `profile`、`createProfilingPlan`、结果协议 v1 及其默认行为保持与 0.4.0 兼容。
