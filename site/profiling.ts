@@ -1,7 +1,7 @@
-import { additionalMetricIds, createProfilingPlan, kind, scalar, type ProfileColumn, type MetricConfig } from '../src/plan';
-import { nativeDistributions } from '../src/distributions';
-import type { ProfilingConnection } from '../src/profile';
-import type { ProfileResult } from '../src/types';
+import { additionalMetricIds, createProfilingPlan, kind, scalar, type ProfileColumn, type MetricConfig } from '../src/plan.js';
+import { nativeDistributions } from '../src/distributions.js';
+import type { ProfilingConnection } from '../src/profile.js';
+import type { ProfileResult } from '../src/types.js';
 
 export interface PlaygroundOptions {
   mode: 'overview' | 'detailed';

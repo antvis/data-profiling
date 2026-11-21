@@ -1,11 +1,11 @@
 import * as duckdb from '@duckdb/duckdb-wasm';
 import ehWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import mvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
-import { renderReport, type ReportOptions } from '../src/report';
-import { kind, type ProfileColumn } from '../src/plan';
-import type { ProfilingConnection } from '../src/profile';
-import type { ProfileResult } from '../src/types';
-import { fileFormat, plainValue, profileDataset, type PlaygroundOptions } from './profiling';
+import { renderReport, type ReportOptions } from '../src/report.js';
+import { kind, type ProfileColumn } from '../src/plan.js';
+import type { ProfilingConnection } from '../src/profile.js';
+import type { ProfileResult } from '../src/types.js';
+import { fileFormat, plainValue, profileDataset, type PlaygroundOptions } from './profiling.js';
 import sampleSQL from './sample.sql?raw';
 import './style.css';
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { openFixture } from './fixture';
+import { openFixture } from './fixture.js';
 
 test('AVA example reuses a connection and maps named models without losing types or precision', async (t) => {
   const { profileForAva } = await import(pathToFileURL(resolve('examples/ava.mjs')).href);

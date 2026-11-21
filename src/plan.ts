@@ -1,4 +1,4 @@
-import type { MetricValue, ProfileResult, ProfileSkip, ProfileDiagnostics } from './types';
+import type { MetricValue, ProfileResult, ProfileSkip, ProfileDiagnostics } from './types.js';
 
 export type ProfileColumn = { name: string; type: string };
 export type MetricConfig = string | { id: string; [option: string]: unknown };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fileFormat, plainValue, profileDataset, MAX_FILE_BYTES } from '../site/profiling';
-import { openFixture } from './fixture';
+import { fileFormat, plainValue, profileDataset, MAX_FILE_BYTES } from '../site/profiling.js';
+import { openFixture } from './fixture.js';
 import type { ProfileColumn } from 'data_profiling';
 
 test('browser profiling reuses native plans and changes output with report configuration', async (t) => {

@@ -1,5 +1,5 @@
-import type { MetricValue, ProfileResult } from './types';
-import { chinese, type Translate } from './report-language';
+import type { MetricValue, ProfileResult } from './types.js';
+import { chinese, type Translate } from './report-language.js';
 
 export interface ReportOptions {
   title?: string;

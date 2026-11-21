@@ -1,4 +1,4 @@
-import { additionalMetricIds } from './plan';
+import { additionalMetricIds } from './plan.js';
 
 /** Native overview metrics matching AVA's default selection. */
 export const BASIC_METRICS = Object.freeze([

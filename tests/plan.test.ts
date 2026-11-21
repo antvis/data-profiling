@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { DuckDBInstance } from '@duckdb/node-api';
 import { createProfilingPlan, type MetricValue, type ProfileResult } from 'data_profiling';
-import { columns, openFixture, profile } from './fixture';
+import { columns, openFixture, profile } from './fixture.js';
 
 const integer = (value: string): MetricValue => ({ type: 'integer', value });
 const number = (value: number): MetricValue => ({ type: 'number', value });

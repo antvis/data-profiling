@@ -4,7 +4,7 @@
 
 [Live playground](https://antv.vision/data-profiling/)
 
-The data profiling foundation for AVA. Supply the caller's DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol. AVA owns data access, sessions and result consumption; business rules and interpretation stay with the application or agent.
+The ES module data profiling foundation for AVA. Supply the caller's DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol. AVA owns data access, sessions and result consumption; business rules and interpretation stay with the application or agent.
 
 The catalog contains 149 metric IDs spanning table and column quality, numeric distributions, categories, text, correlations, dates, files, images and time series. Applicable metrics run in batches, native aggregates share computation, and only statistics return to JavaScript. See the [metric catalog and definitions](./docs/metrics.md).
 
@@ -128,7 +128,7 @@ Node.js 22.13 or later:
 ```sh
 npm install
 npm test
-node examples/node.mjs
+node examples/node.js
 node examples/profile.mjs
 node examples/ava.mjs
 PROFILING_PYTHON=.venv/bin/python npm test
@@ -140,4 +140,4 @@ npm pack
 
 Tests cover metric families, precision, empty inputs, validation, statement reuse and constrained memory. Benchmarks cover mixed data, unique strings, wider numeric tables, specialized analysis and a five-million-row sum under a 16 MB limit. Measurements use local in-memory tables.
 
-Version 0.5.0 adds `BASIC_METRICS` and native skip diagnostics. Existing `profile`, `createProfilingPlan`, result protocol v1 and their defaults remain compatible with 0.4.0.
+Version 0.5.0 adds `BASIC_METRICS` and native skip diagnostics. The package now uses ES modules; `profile`, `createProfilingPlan`, result protocol v1 and their defaults are retained.

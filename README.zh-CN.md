@@ -4,7 +4,7 @@
 
 [在线体验](https://antv.vision/data-profiling/)
 
-为 AVA 提供数据画像计算能力的基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
+为 AVA 提供数据画像计算能力的 ES Modules 基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
 
 支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标目录与计算口径](./docs/metrics.md)。
 
@@ -128,7 +128,7 @@ Node.js 22.13 或以上：
 ```sh
 npm install
 npm test
-node examples/node.mjs
+node examples/node.js
 node examples/profile.mjs
 node examples/ava.mjs
 PROFILING_PYTHON=.venv/bin/python npm test
@@ -140,4 +140,4 @@ npm pack
 
 测试覆盖各指标族、精度、空表、参数、预编译复用和受限内存。基准覆盖混合表、唯一字符串、宽数值表、专项组合，以及 16 MB 限制下的 500 万行求和。测量基于本机内存表。
 
-0.5.0 新增 `BASIC_METRICS` 和原生指标跳过诊断。现有 `profile`、`createProfilingPlan`、结果协议 v1 及其默认行为保持与 0.4.0 兼容。
+0.5.0 新增 `BASIC_METRICS` 和原生指标跳过诊断。包格式切换为 ES Modules；保留现有 `profile`、`createProfilingPlan`、结果协议 v1 及其默认行为。

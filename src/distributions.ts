@@ -1,6 +1,6 @@
-import { kind, scalar, type ProfileColumn } from './plan';
-import type { ProfileOptions, ProfilingConnection } from './profile';
-import type { MetricValue, ProfileResult } from './types';
+import { kind, scalar, type ProfileColumn } from './plan.js';
+import type { ProfileOptions, ProfilingConnection } from './profile.js';
+import type { MetricValue, ProfileResult } from './types.js';
 
 export async function nativeDistributions(
   connection: ProfilingConnection,

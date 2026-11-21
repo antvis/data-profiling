@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Socket } from 'node:net';
 import {
   createProfilingPlan,
@@ -10,12 +11,12 @@ import {
   type MetricConfig,
   type ProfileColumn,
   type ProfilingOptions,
-} from './plan';
-import { ALL_METRICS, metricFamilies } from './metrics';
-import { nativeDistributions } from './distributions';
-import type { MetricValue, ProfileResult } from './types';
+} from './plan.js';
+import { ALL_METRICS, metricFamilies } from './metrics.js';
+import { nativeDistributions } from './distributions.js';
+import type { MetricValue, ProfileResult } from './types.js';
 
-export { ALL_METRICS } from './metrics';
+export { ALL_METRICS } from './metrics.js';
 export interface ProfilingConnection {
   run(sql: string): Promise<unknown>;
   runAndReadAll(sql: string): Promise<{ getRowObjectsJson(): Record<string, unknown>[] }>;
@@ -89,7 +90,7 @@ function assignedType(name: string, options: ProfileOptions) {
 const workers = new Map<string, ReturnType<typeof createWorker>>();
 
 function createWorker(python: string) {
-  const child = spawn(python, [join(__dirname, 'worker.py')], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(python, [fileURLToPath(new URL('./worker.py', import.meta.url))], { stdio: ['pipe', 'pipe', 'pipe'] });
   const pending = new Map<number, { resolve(value: ProfileResult[]): void; reject(error: unknown): void }>();
   let next = 0,
     output = '',

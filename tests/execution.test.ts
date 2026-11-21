@@ -13,7 +13,7 @@ import {
   type ProfileResult,
   type MetricValue,
 } from 'data_profiling';
-import { openFixture } from './fixture';
+import { openFixture } from './fixture.js';
 
 const python = process.env.PROFILING_PYTHON;
 const integer = (value: string): MetricValue => ({ type: 'integer', value });

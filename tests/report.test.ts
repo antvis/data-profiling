@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ALL_METRICS, profile, type MetricValue, type ProfileColumn, type ProfileResult } from 'data_profiling';
 import { renderReport, type ReportOptions } from 'data_profiling/report';
-import { openFixture } from './fixture';
+import { openFixture } from './fixture.js';
 
 const integer = (value: string): MetricValue => ({ type: 'integer', value });
 const number = (value: number): MetricValue => ({ type: 'number', value });
