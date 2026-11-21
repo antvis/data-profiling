@@ -331,6 +331,40 @@ test('selection retains column subsets, empty requests and last-configuration se
   );
 });
 
+test('native diagnostics separate unsupported types, cardinality skips and computed nulls', async (t) => {
+  const connection = await openFixture(t);
+  await connection.run(`CREATE VIEW diagnostics AS SELECT NULL::DOUBLE AS n, i::VARCHAR AS id FROM range(3) t(i)`);
+  const plan = createProfilingPlan('diagnostics', [
+    { name: 'n', type: 'DOUBLE' }, { name: 'id', type: 'VARCHAR' },
+  ], { metrics: ['mean', 'top_values'] });
+  const row = (await connection.runAndReadAll(plan.sql)).getRowObjectsJson()[0];
+  const details = plan.decodeWithDiagnostics(row);
+  assert.deepEqual(details.results, plan.decode(row));
+  assert.deepEqual(details.results.map(({ metric, columns, value }) => ({ metric, columns, value })), [
+    { metric: 'mean', columns: ['n'], value: { type: 'null', value: null } },
+  ]);
+  assert.deepEqual(details.skipped, [
+    { table_name: 'diagnostics', metric: 'mean', columns: ['id'], reason: 'unsupported_type' },
+    { table_name: 'diagnostics', metric: 'top_values', columns: ['n'], reason: 'unsupported_type' },
+    { table_name: 'diagnostics', metric: 'top_values', columns: ['id'], reason: 'cardinality_limit' },
+  ]);
+  details.skipped[0].columns[0] = 'changed';
+  assert.equal(plan.decodeWithDiagnostics(row).skipped[0].columns[0], 'id');
+  assert.throws(() => plan.decodeWithDiagnostics({}), /Missing aggregate/);
+});
+
+test('fully inapplicable and empty selections have diagnostics without executing SQL', () => {
+  const columns = [{ name: 's', type: 'VARCHAR' }];
+  const plan = createProfilingPlan('sample', columns, { metrics: ['mean', 'mean'] });
+  assert.equal(plan.metrics.length, 0);
+  assert.deepEqual(plan.decodeWithDiagnostics({}), {
+    results: [], skipped: [{ table_name: 'sample', metric: 'mean', columns: ['s'], reason: 'unsupported_type' }],
+  });
+  assert.deepEqual(createProfilingPlan('sample', columns, { metrics: [] }).decodeWithDiagnostics({}), {
+    results: [], skipped: [],
+  });
+});
+
 test('streaming selection excludes expensive states and native sum fits a small memory budget', async (t) => {
   const instance = await DuckDBInstance.create(':memory:', { threads: '1', memory_limit: '16MB' });
   const connection = await instance.connect();

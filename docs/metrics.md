@@ -6,6 +6,10 @@
 
 ## 执行方式
 
+AVA 接入可显式选择导出的只读 `BASIC_METRICS`：`row_count`、`null_count`、`distinct_count`、`top_values`、`min`、`max`、`mean`。该集合原生执行，不改变 `profile` 或 `createProfilingPlan` 的默认选择；去重和频数仍有基数相关成本。
+
+原生计划可用 `decodeWithDiagnostics(row)` 返回 `{ results, skipped }`。跳过原因区分字段类型不适用的 `unsupported_type` 和高频值基数限制的 `cardinality_limit`；已计算但无定义的值继续返回带类型的 `null`。诊断不追加查询。详见 [AVA 接入说明](./ava.md)。
+
 原生 SQL 批量计算基础统计、精确去重、方差/偏度/峰度、MAD、IQR、长度、普通数值分位、数值直方图、卡方统计量、频数、单例、布尔众数、类别失衡、重复组及 Pearson。其余算法按需使用 Python；数据通过临时 Parquet 交换，源数据不进入 JavaScript。频数、文本、URL/路径、文件和图像使用带权不同值，不重复展开整列。跨列相关和时序只导出必要原始列；内存指标导出参与画像的全部列。
 
 Python 3.10+ 依赖见 `python-requirements.txt`。默认解释器为 `python3`，用 `python` 指定其他解释器。worker 复用导入，空闲 30 秒退出，不阻止 Node 进程结束；每次请求重新读取数据和文件。专项失败会拒绝整个请求并清理临时文件。

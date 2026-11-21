@@ -4,14 +4,14 @@
 
 [Live playground](https://antv.vision/data-profiling/)
 
-A data profiling engine for data platforms, analysis tools and applications. Supply a DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol.
+The data profiling foundation for AVA. Supply the caller's DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol. AVA owns data access, sessions and result consumption; business rules and interpretation stay with the application or agent.
 
 The catalog contains 149 metric IDs spanning table and column quality, numeric distributions, categories, text, correlations, dates, files, images and time series. Applicable metrics run in batches, native aggregates share computation, and only statistics return to JavaScript. See the [metric catalog and definitions](./docs/metrics.md).
 
 ## Compute a profile
 
 ```ts
-import { profile } from 'data_profiling';
+import { BASIC_METRICS, profile } from 'data_profiling';
 import type { ProfileColumn } from 'data_profiling';
 
 const columns = (await connection.runAndReadAll(
@@ -19,12 +19,13 @@ const columns = (await connection.runAndReadAll(
 )).getRowObjectsJson() as ProfileColumn[];
 
 const results = await profile(connection, 'orders', columns, {
-  metrics: ['row_count', 'missing_rate', 'distinct_count',
-    'min', 'max', 'mean', 'stddev_samp'],
+  metrics: BASIC_METRICS,
 });
 ```
 
 Reuse the caller's connection and pass an existing schema directly. `metrics` selects the work to perform; omitting it uses the complete `ALL_METRICS` catalog, and `[]` returns no results. The last configuration for an ID wins. The column list can be a subset; types come from the schema or explicit roles.
+
+`BASIC_METRICS` matches AVA's seven default metric IDs: `row_count`, `null_count`, `distinct_count`, `top_values`, `min`, `max`, `mean`. It uses native SQL without Python or raw-data export. Exact distinct counts and top values still require data-dependent state; select fewer metrics when needed. Neither existing entry point changes its defaults. See the [AVA integration guide](./docs/ava.md) and [consumer-side example](./examples/ava.mjs).
 
 Counts, bounds, sums, variance, lengths, frequencies and ordinary numeric quantiles/histograms run directly in DuckDB. Character analysis, high-precision quantiles, some statistical tests, files and time-series algorithms use an optional Python environment:
 
@@ -62,6 +63,8 @@ const results = plan.decode(reader.getRowObjectsJson()[0]);
 
 This entry point accepts directly compilable metrics and defaults to 15 basic statistics. `plan.sql` returns one native statistics row; `plan.decode` converts it into `ProfileResult[]`. Consumers can also read native values using `plan.metrics`. Use `profile` for the complete catalog and statistics requiring additional stages.
 
+For explicit native coverage, use `plan.decodeWithDiagnostics(row)` to receive `{ results, skipped }`. Each skipped target identifies its table, columns, metric and `unsupported_type` or `cardinality_limit` reason. A computed undefined value remains a typed `null` in `results`. Unrequested metrics are absent from both lists. Invalid requests, transport errors and execution failures still throw.
+
 Reuse a plan while its schema is unchanged, and use `connection.prepare(plan.sql)` to reuse a prepared statement. Release statements with `destroySync()`. Each execution reads current data; recompile after schema changes. Table references use DuckDB's qualified names, such as `sales.orders`; quote unusual components separately.
 
 ## Render an offline report
@@ -92,7 +95,7 @@ Run `npm run build && node examples/report.mjs` for an example using native prof
 
 Each `ProfileResult` contains `protocol_version`, `table_name`, `columns`, `metric`, `parameters` and a `value` with `type` / `value` tags. Targets are `[]` for a table, `[name]` for a column and `[a, b]` for a pair.
 
-Integers and decimals retain exact typed strings. Floating results use numbers or `NaN`, `Infinity`, `-Infinity` string sentinels. Temporal precision is preserved, time-zone-aware values normalize to UTC, and durations use nanoseconds. Undefined results use typed `null`; unsupported or skipped metrics produce no record.
+Integers and decimals retain exact typed strings. Lossy integer transports and malformed scalar values are rejected, including frequencies and histogram counts. Floating results use numbers or `NaN`, `Infinity`, `-Infinity` string sentinels. Temporal precision is preserved, time-zone-aware values normalize to UTC, and durations use nanoseconds. Undefined results use typed `null`; unsupported or skipped metrics produce no record.
 
 `profile` treats floating NaN as missing and retains infinities in numeric bounds. The compiler defaults to `semantics: 'finite'`: missingness counts only SQL NULL, and numeric aggregates exclude non-finite values. Select `'extended'` to count NaN as missing and retain infinities in supported numeric aggregates. Decimal medians and dispersion retain DuckDB's native precision.
 
@@ -102,7 +105,7 @@ The [catalog](./docs/metrics.md) documents structures and options for frequencie
 
 The caller's connection controls native parallelism and memory. Exact distinct counts, complete frequencies and medians require data-dependent state. Select the required metrics to control computation and output costs.
 
-Specialized algorithms export only grouped values or required raw columns through temporary Parquet. Repeated paths share reads within a request. Python workers retain imports for reuse and exit after 30 seconds idle; statistics and file metadata are recalculated on every request. Temporary files are removed on success and failure. Use the caller's transaction for a consistent snapshot across stages.
+Specialized algorithms export only grouped values or required raw columns through temporary Parquet. Pairwise requests without two eligible columns do not start Python; rank correlations export numeric columns only. Repeated paths share reads within a request. Python workers retain imports for reuse and exit after 30 seconds idle; statistics and file metadata are recalculated on every request. Temporary files are removed on success and failure. Use the caller's transaction for a consistent snapshot across stages.
 
 ## Development
 
@@ -127,6 +130,7 @@ npm install
 npm test
 node examples/node.mjs
 node examples/profile.mjs
+node examples/ava.mjs
 PROFILING_PYTHON=.venv/bin/python npm test
 node examples/profile.mjs .venv/bin/python
 npm run bench -- 200000
@@ -136,4 +140,4 @@ npm pack
 
 Tests cover metric families, precision, empty inputs, validation, statement reuse and constrained memory. Benchmarks cover mixed data, unique strings, wider numeric tables, specialized analysis and a five-million-row sum under a 16 MB limit. Measurements use local in-memory tables.
 
-Version 0.4.0 uses `profile`, `ALL_METRICS` and `ProfileOptions` for profile execution; the compiler uses `semantics: 'finite' | 'extended'`.
+Version 0.5.0 adds `BASIC_METRICS` and native skip diagnostics. Existing `profile`, `createProfilingPlan`, result protocol v1 and their defaults remain compatible with 0.4.0.

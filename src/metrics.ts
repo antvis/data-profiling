@@ -1,5 +1,10 @@
 import { additionalMetricIds } from './plan';
 
+/** Native overview metrics matching AVA's default selection. */
+export const BASIC_METRICS = Object.freeze([
+  'row_count', 'null_count', 'distinct_count', 'top_values', 'min', 'max', 'mean',
+] as const);
+
 export const metricFamilies = {
   frequency: [
     'value_counts',

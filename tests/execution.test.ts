@@ -8,6 +8,7 @@ import {
   createProfilingPlan,
   profile,
   ALL_METRICS,
+  BASIC_METRICS,
   type ProfileColumn,
   type ProfileResult,
   type MetricValue,
@@ -23,6 +24,86 @@ const schema = async (connection: Awaited<ReturnType<typeof openFixture>>, table
   (
     await connection.runAndReadAll('SELECT name,type FROM pragma_table_info(?)', [table])
   ).getRowObjectsJson() as ProfileColumn[];
+
+test('basic metrics profile only selected columns in one native query without Python', async (t) => {
+  const c = await openFixture(t);
+  let reads = 0;
+  const rows = await profile({
+    run: async () => { throw new Error('Unexpected export'); },
+    runAndReadAll: (sql) => { reads++; return c.runAndReadAll(sql); },
+  }, 'sample', [{ name: 'amount', type: 'DOUBLE' }], {
+    metrics: BASIC_METRICS, python: '/does/not/exist',
+  });
+  assert.equal(reads, 1);
+  assert.ok(Object.isFrozen(BASIC_METRICS));
+  assert.deepEqual(get(rows, 'row_count'), integer('5'));
+  assert.deepEqual(get(rows, 'distinct_count', 'amount'), integer('3'));
+  assert.ok(rows.every((row) => !row.columns.length || row.columns[0] === 'amount'));
+  assert.ok(rows.every((row) => (BASIC_METRICS as readonly string[]).includes(row.metric)));
+});
+
+test('inapplicable pair and ordered requests do not query, export or start Python', async () => {
+  const connection = {
+    run: async () => { throw new Error('Unexpected export'); },
+    runAndReadAll: async () => { throw new Error('Unexpected query'); },
+  };
+  for (const metric of ['spearman_rho', 'kendall_tau', 'cramers_v', 'auto_correlation', 'phi_k']) {
+    assert.deepEqual(await profile(connection, 'sample', [{ name: 'n', type: 'INTEGER' }], {
+      metrics: [metric], python: '/does/not/exist',
+    }), []);
+  }
+  assert.deepEqual(await profile(connection, 'sample', [{ name: 's', type: 'VARCHAR' }], {
+    metrics: ['is_nondecreasing'], orderBy: ['s'], python: '/does/not/exist',
+  }), []);
+});
+
+test('rank correlations export only numeric columns', async (t) => {
+  const c = await openFixture(t);
+  const columns = await schema(c, 'sample');
+  let exportSql = '';
+  await assert.rejects(profile({
+    runAndReadAll: (sql) => c.runAndReadAll(sql),
+    run: async (sql) => { exportSql = sql; throw new Error('Captured export'); },
+  }, 'sample', columns, { metrics: ['spearman_rho'] }), /Captured export/);
+  assert.match(exportSql, /SELECT "amount", "complete" FROM/);
+  assert.doesNotMatch(exportSql, /"channel"|"approved"|"empty"/);
+});
+
+test('frequency transports preserve exact values and reject lossy or malformed scalars', async () => {
+  const read = (type: string, value: unknown, count: unknown = '2') =>
+    profile(
+      {
+        run: async () => { throw new Error('Unexpected export'); },
+        runAndReadAll: async () => ({ getRowObjectsJson: () => [{ value_counts: [{ value, count }] }] }),
+      },
+      'sample', [{ name: 'value', type }], { metrics: ['value_counts'] }
+    );
+  const exact = await read('BIGINT', '9007199254740993', '9007199254740995');
+  assert.deepEqual(exact[0].value, {
+    type: 'list', value: [{ type: 'object', value: {
+      value: integer('9007199254740993'), count: integer('9007199254740995'),
+    } }],
+  });
+  for (const [type, value, count] of [
+    ['BIGINT', Number.MAX_SAFE_INTEGER + 1, '2'],
+    ['BIGINT', '1', Number.MAX_SAFE_INTEGER + 1],
+    ['DECIMAL(20,2)', 1.25, '2'],
+    ['BOOLEAN', 'false', '2'],
+    ['DOUBLE', 'invalid', '2'],
+  ] as const) await assert.rejects(read(type, value, count), /Invalid|lossy/);
+});
+
+test('native histogram counts reject lossy integer transports', async () => {
+  let reads = 0;
+  await assert.rejects(profile({
+    run: async () => { throw new Error('Unexpected export'); },
+    runAndReadAll: async () => ({ getRowObjectsJson: () => [++reads === 1
+      ? { lo0: 0, hi0: 2, n0: 4, d0: 2 }
+      : { h0: [Number.MAX_SAFE_INTEGER + 1, '1'] }] }),
+  }, 'sample', [{ name: 'value', type: 'DOUBLE' }], {
+    metrics: ['numeric_histogram'], bins: 2,
+  }), /lossy integer/);
+});
 
 test('profiling streaming metrics and Pearson use native aggregates without Python or export', async (t) => {
   const c = await openFixture(t);

@@ -144,7 +144,7 @@ export async function nativeDistributions(
               value: counts.map((count, i) =>
                 options.density
                   ? scalar('number', Number(count) / (total * (job.edges[i + 1] - job.edges[i])))
-                  : { type: 'integer', value: String(count) }
+                  : scalar('integer', count)
               ),
             },
             edges: { type: 'list', value: job.edges.map((value) => ({ type: 'number', value })) },

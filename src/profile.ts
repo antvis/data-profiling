@@ -44,7 +44,7 @@ export interface ProfileOptions extends Omit<ProfilingOptions, 'semantics'> {
 const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const lit = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const id = (value: MetricConfig) => (typeof value === 'string' ? value : value.id);
-const integer = (value: unknown): MetricValue => ({ type: 'integer', value: String(value) });
+const integer = (value: unknown): MetricValue => scalar('integer', value);
 const number = (value: number): MetricValue => scalar('number', value);
 const labels = {
   numeric: 'Numeric',
@@ -61,20 +61,20 @@ const labels = {
 
 function fieldValue(raw: unknown, type: string): MetricValue {
   if (raw == null) return { type: 'null', value: null };
-  if (/^BOOLEAN$/i.test(type)) return { type: 'boolean', value: raw as boolean };
-  if (/^(DECIMAL|NUMERIC)/i.test(type)) return { type: 'decimal', value: String(raw) };
-  if (/^(FLOAT|DOUBLE|REAL)$/i.test(type)) return number(Number(raw));
+  if (/^BOOLEAN$/i.test(type)) return scalar('boolean', raw);
+  if (/^(DECIMAL|NUMERIC)/i.test(type)) return scalar('decimal', raw);
+  if (/^(FLOAT|DOUBLE|REAL)$/i.test(type)) return scalar('number', raw);
   if (/^(U?(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|INT[1248]?|BIGNUM)$/i.test(type)) return integer(raw);
-  return {
-    type: /^DATE$/i.test(type)
+  return scalar(
+    /^DATE$/i.test(type)
       ? 'date'
       : /^TIMESTAMP(TZ| WITH TIME ZONE)$/i.test(type)
       ? 'timestamptz'
       : /^TIMESTAMP/i.test(type)
       ? 'timestamp'
       : 'string',
-    value: String(raw),
-  };
+    raw
+  );
 }
 
 function role(column: ProfileColumn, options: ProfileOptions): string {
@@ -405,9 +405,18 @@ export async function profile(
       );
     }
   }
-  const pair = metricFamilies.pair.filter((metric) => metric !== 'pearson_r' && requested.has(metric));
+  const pairColumns = (metric: string) => columns.filter((column) => {
+    const type = role(column, options);
+    return metric === 'phi_k' ? type !== 'unknown'
+      : ['spearman_rho', 'kendall_tau'].includes(metric) ? ['numeric', 'timeseries'].includes(type)
+      : metric === 'cramers_v' ? ['categorical', 'boolean'].includes(type)
+      : ['numeric', 'timeseries', 'categorical', 'boolean'].includes(type);
+  });
+  const pair = metricFamilies.pair.filter((metric) =>
+    metric !== 'pearson_r' && requested.has(metric) && pairColumns(metric).length > 1
+  );
   const memory = ['table_memory_bytes', 'mean_row_memory_bytes', 'column_memory_bytes'].filter((metric) =>
-    requested.has(metric)
+    requested.has(metric) && columns.length > 0
   );
   const time = [
     ...metricFamilies.timeseries,
@@ -419,7 +428,8 @@ export async function profile(
   ].filter((metric) => requested.has(metric));
   const ordered = metricFamilies.ordered.filter((metric) => requested.has(metric));
   const needsOrder =
-    (time.length && options.timeIndex) || (ordered.length && (options.orderBy?.length || options.timeIndex));
+    (time.length && options.timeIndex) || (ordered.length && (options.orderBy?.length || options.timeIndex) &&
+      columns.some((column) => ['numeric', 'timeseries'].includes(role(column, options))));
   if (!tasks.length && !pair.length && !memory.length && !needsOrder && !distributions.chiTests.length) return results;
   const directory = await mkdtemp(join(tmpdir(), 'data-profiling-'));
   try {
@@ -440,13 +450,13 @@ export async function profile(
     let raw: string | undefined;
     if (pair.length || memory.length || needsOrder) {
       raw = join(directory, 'columns.parquet');
+      const pairNames = new Set(pair.flatMap((metric) => pairColumns(metric).map((column) => column.name)));
       const selected = memory.length
         ? columns
         : columns.filter(
             (column) =>
-              column.name === options.timeIndex ||
-              ['numeric', 'timeseries', 'categorical', 'boolean'].includes(role(column, options)) ||
-              (pair.includes('phi_k') && role(column, options) !== 'unknown')
+              pairNames.has(column.name) || (needsOrder && (column.name === options.timeIndex ||
+                ['numeric', 'timeseries'].includes(role(column, options))))
           );
       if (selected.length) {
         const order = needsOrder ? (options.orderBy?.length ? options.orderBy : [options.timeIndex!]) : [];
