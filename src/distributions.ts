@@ -86,6 +86,8 @@ export async function nativeDistributions(
           if (!Number.isSafeInteger(bins) || bins > 100000) throw new Error('Automatic histogram exceeds 100000 bins');
           const step = (high - low) / bins;
           edges = Array.from({ length: bins + 1 }, (_, i) => (i === bins ? high : low + i * step));
+          // Floating-point rounding can collapse adjacent bin edges.
+          edges = [...new Set(edges)];
         }
       }
       jobs.push({ column, edges, chi: test, alias: `h${jobs.length}` });

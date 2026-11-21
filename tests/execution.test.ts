@@ -336,6 +336,19 @@ test('native profiling quantiles and histograms preserve NumPy boundary conventi
   assert.deepEqual(get(empty, 'chi_squared_p_value', 'n'), number(0));
 });
 
+test('native histograms merge rounded bin boundaries for large integers without losing observations', async (t) => {
+  const c = await openFixture(t);
+  await c.run('CREATE TABLE close_integers AS SELECT * FROM (VALUES (9007199254740993::BIGINT), (9007199254740994), (9007199254740995)) t(n)');
+  const rows = await profile(c, 'close_integers', await schema(c, 'close_integers'), { metrics: ['min', 'numeric_histogram'], bins: 10 });
+  assert.deepEqual(get(rows, 'min', 'n'), integer('9007199254740993'));
+  assert.deepEqual(get(rows, 'numeric_histogram', 'n'), {
+    type: 'object', value: {
+      counts: { type: 'list', value: [integer('1'), integer('2')] },
+      edges: { type: 'list', value: [number(9007199254740992), number(9007199254740994), number(9007199254740996)] },
+    },
+  });
+});
+
 test('profiling validates requests before I/O and cleans exports when a worker fails', async (t) => {
   const c = await openFixture(t);
   const columns = await schema(c, 'sample');
