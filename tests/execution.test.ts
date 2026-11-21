@@ -24,6 +24,42 @@ const schema = async (connection: Awaited<ReturnType<typeof openFixture>>, table
     await connection.runAndReadAll('SELECT name,type FROM pragma_table_info(?)', [table])
   ).getRowObjectsJson() as ProfileColumn[];
 
+test('frequency transports preserve exact values and reject lossy or malformed scalars', async () => {
+  const read = (type: string, value: unknown, count: unknown = '2') =>
+    profile(
+      {
+        run: async () => { throw new Error('Unexpected export'); },
+        runAndReadAll: async () => ({ getRowObjectsJson: () => [{ value_counts: [{ value, count }] }] }),
+      },
+      'sample', [{ name: 'value', type }], { metrics: ['value_counts'] }
+    );
+  const exact = await read('BIGINT', '9007199254740993', '9007199254740995');
+  assert.deepEqual(exact[0].value, {
+    type: 'list', value: [{ type: 'object', value: {
+      value: integer('9007199254740993'), count: integer('9007199254740995'),
+    } }],
+  });
+  for (const [type, value, count] of [
+    ['BIGINT', Number.MAX_SAFE_INTEGER + 1, '2'],
+    ['BIGINT', '1', Number.MAX_SAFE_INTEGER + 1],
+    ['DECIMAL(20,2)', 1.25, '2'],
+    ['BOOLEAN', 'false', '2'],
+    ['DOUBLE', 'invalid', '2'],
+  ] as const) await assert.rejects(read(type, value, count), /Invalid|lossy/);
+});
+
+test('native histogram counts reject lossy integer transports', async () => {
+  let reads = 0;
+  await assert.rejects(profile({
+    run: async () => { throw new Error('Unexpected export'); },
+    runAndReadAll: async () => ({ getRowObjectsJson: () => [++reads === 1
+      ? { lo0: 0, hi0: 2, n0: 4, d0: 2 }
+      : { h0: [Number.MAX_SAFE_INTEGER + 1, '1'] }] }),
+  }, 'sample', [{ name: 'value', type: 'DOUBLE' }], {
+    metrics: ['numeric_histogram'], bins: 2,
+  }), /lossy integer/);
+});
+
 test('profiling streaming metrics and Pearson use native aggregates without Python or export', async (t) => {
   const c = await openFixture(t);
   await c.run('CREATE TABLE profile_native AS SELECT i AS idx, i::DOUBLE - 2 AS x, i * 2 AS y FROM range(5) t(i)');

@@ -44,7 +44,7 @@ export interface ProfileOptions extends Omit<ProfilingOptions, 'semantics'> {
 const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
 const lit = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const id = (value: MetricConfig) => (typeof value === 'string' ? value : value.id);
-const integer = (value: unknown): MetricValue => ({ type: 'integer', value: String(value) });
+const integer = (value: unknown): MetricValue => scalar('integer', value);
 const number = (value: number): MetricValue => scalar('number', value);
 const labels = {
   numeric: 'Numeric',
@@ -61,20 +61,20 @@ const labels = {
 
 function fieldValue(raw: unknown, type: string): MetricValue {
   if (raw == null) return { type: 'null', value: null };
-  if (/^BOOLEAN$/i.test(type)) return { type: 'boolean', value: raw as boolean };
-  if (/^(DECIMAL|NUMERIC)/i.test(type)) return { type: 'decimal', value: String(raw) };
-  if (/^(FLOAT|DOUBLE|REAL)$/i.test(type)) return number(Number(raw));
+  if (/^BOOLEAN$/i.test(type)) return scalar('boolean', raw);
+  if (/^(DECIMAL|NUMERIC)/i.test(type)) return scalar('decimal', raw);
+  if (/^(FLOAT|DOUBLE|REAL)$/i.test(type)) return scalar('number', raw);
   if (/^(U?(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|INT[1248]?|BIGNUM)$/i.test(type)) return integer(raw);
-  return {
-    type: /^DATE$/i.test(type)
+  return scalar(
+    /^DATE$/i.test(type)
       ? 'date'
       : /^TIMESTAMP(TZ| WITH TIME ZONE)$/i.test(type)
       ? 'timestamptz'
       : /^TIMESTAMP/i.test(type)
       ? 'timestamp'
       : 'string',
-    value: String(raw),
-  };
+    raw
+  );
 }
 
 function role(column: ProfileColumn, options: ProfileOptions): string {
