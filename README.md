@@ -62,6 +62,30 @@ This entry point accepts directly compilable metrics and defaults to 15 basic st
 
 Reuse a plan while its schema is unchanged, and use `connection.prepare(plan.sql)` to reuse a prepared statement. Release statements with `destroySync()`. Each execution reads current data; recompile after schema changes. Table references use DuckDB's qualified names, such as `sales.orders`; quote unusual components separately.
 
+## Render an offline report
+
+The independent `data_profiling/report` entry renders existing results as a single HTML document, with inline styles and charts:
+
+```ts
+import { writeFile } from 'node:fs/promises';
+import { renderReport } from 'data_profiling/report';
+
+const html = renderReport(results, {
+  title: 'Orders data profile',
+  theme: 'light', // 'light' (default), 'dark', or 'auto'
+  language: 'en-US', // 'zh-CN' (default) or 'en-US'
+});
+await writeFile('orders-report.html', html, 'utf8');
+```
+
+`renderReport` is synchronous and accepts `readonly ProfileResult[]`. It renders table overviews, factual quality observations, expandable column details, distributions and frequencies, pairwise matrices, missing-value coverage, and ACF/PACF when supplied. All exact values and metric parameters remain available in detail tables. Missing metrics are marked “Not supplied”; computed nulls are marked “Undefined”. Chart geometry uses approximate numbers while detail tables preserve the original integer, decimal and temporal strings. Frequency charts preview up to 12 supplied entries; the full supplied data remains in the tables.
+
+The renderer does not query data, load files, or require Python or DuckDB. It supports multiple tables and validates protocol-v1 inputs. HTML escaping protects table names, column names, values and options. Reports work offline with native expand/collapse controls. Samples, scatter plots and missingness matrices require additional data not present in the current result protocol.
+
+Reports default to Simplified Chinese. `language` controls headings, metric and parameter labels, type names, chart text and empty states; the HTML `lang` attribute follows it. Table names, column names, data values and custom titles stay unchanged. Machine metric IDs remain in tooltips; unknown metric IDs retain their readable names.
+
+Run `npm run build && node examples/report.mjs` for an example using native profiling metrics.
+
 ## Results and precision
 
 Each `ProfileResult` contains `protocol_version`, `table_name`, `columns`, `metric`, `parameters` and a `value` with `type` / `value` tags. Targets are `[]` for a table, `[name]` for a column and `[a, b]` for a pair.

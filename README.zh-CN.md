@@ -62,6 +62,30 @@ const results = plan.decode(reader.getRowObjectsJson()[0]);
 
 schema 不变时可复用计划，通过 `connection.prepare(plan.sql)` 复用预编译语句，用完后调用 `destroySync()`。每次执行读取当前数据；schema 变化后重新生成计划。表引用采用 DuckDB 完整表名，如 `sales.orders`，特殊名称分别加双引号。
 
+## 渲染离线报告
+
+独立入口 `data_profiling/report` 将已有结果渲染为单文件 HTML，样式与图表全部内联：
+
+```ts
+import { writeFile } from 'node:fs/promises';
+import { renderReport } from 'data_profiling/report';
+
+const html = renderReport(results, {
+  title: '订单数据画像',
+  theme: 'light', // 'light'（默认）、'dark' 或 'auto'
+  language: 'zh-CN', // 默认中文，可选 'en-US'
+});
+await writeFile('orders-report.html', html, 'utf8');
+```
+
+`renderReport` 同步接收 `readonly ProfileResult[]`，展示表概览、基于已有指标的质量观察、可展开的列详情、分布与频数、列对矩阵、缺失覆盖，以及已提供的 ACF/PACF。全部精确值和指标参数保留在详情表中。未提供的指标标为“未提供”，已计算但无定义的 null 标为“未定义”。图表坐标使用近似数值，详情保留原始整数、小数和时间字符串。频数图预览前 12 个已提供的值，表格保留全部已有数据。
+
+渲染不查询数据、不读取文件，也不依赖 Python 或 DuckDB；支持多表并校验协议 v1 输入，对表名、列名、值和选项进行 HTML 转义。报告可离线打开，使用原生展开/折叠交互。样本、散点和缺失模式矩阵需要当前结果协议尚未提供的额外数据。
+
+报告默认使用简体中文，`language` 控制标题、指标名、参数名、类型名、图表文案和空状态，同时设置 HTML 的 `lang` 属性。原始表名、列名、数据值和自定义标题保持原样。指标 ID 可在悬浮提示中查看，未知的自定义指标沿用原名。
+
+运行 `npm run build && node examples/report.mjs` 可生成使用原生画像指标的示例报告。
+
 ## 结果与精度
 
 每条 `ProfileResult` 包含 `protocol_version`、`table_name`、`columns`、`metric`、`parameters` 和带 `type` / `value` 标签的 `value`。表级目标为 `[]`，单列为 `[name]`，列对为 `[a, b]`。
