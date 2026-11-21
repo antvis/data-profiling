@@ -2,6 +2,8 @@
 
 # Data Profiling
 
+[Live playground](https://antv.vision/data-profiling/)
+
 A data profiling engine for data platforms, analysis tools and applications. Supply a DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol.
 
 The catalog contains 149 metric IDs spanning table and column quality, numeric distributions, categories, text, correlations, dates, files, images and time series. Applicable metrics run in batches, native aggregates share computation, and only statistics return to JavaScript. See the [metric catalog and definitions](./docs/metrics.md).

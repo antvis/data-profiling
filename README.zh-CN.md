@@ -2,6 +2,8 @@
 
 # Data Profiling
 
+[在线体验](https://antv.vision/data-profiling/)
+
 面向数据平台、分析工具和应用的数据画像计算库。输入 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。
 
 支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标目录与计算口径](./docs/metrics.md)。
