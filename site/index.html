@@ -17,7 +17,7 @@
       <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 11-2l3 3M4 16l3 3a7 7 0 0 0 11-2"/></symbol>
       <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
       <symbol id="icon-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
-      <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 7h5m4 0h7M4 17h9m4 0h3"/><circle cx="11" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></symbol>
+      <symbol id="icon-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
       <symbol id="icon-book" viewBox="0 0 24 24"><path d="M12 6c-2-2-5-2-9-2v14c4 0 7 0 9 2 2-2 5-2 9-2V4c-4 0-7 0-9 2v14"/></symbol>
       <symbol id="icon-github" viewBox="0 0 24 24"><path d="M9 19c-4 1.3-4-2-6-2.5m12 5v-3.4c0-1 .1-1.4-.5-2 3-.3 6-1.5 6-6.5A4.9 4.9 0 0 0 19 6c.1-.3.6-1.7-.2-3.6 0 0-1.2-.3-3.8 1.4a13 13 0 0 0-6 0C6.4 2.1 5.2 2.4 5.2 2.4 4.4 4.3 4.9 5.7 5 6a4.9 4.9 0 0 0-1.5 3.6c0 5 3 6.2 6 6.5-.6.6-.5 1.2-.5 2v3.4"/></symbol>
     </svg>
@@ -32,6 +32,31 @@
       </div>
     </header>
     <main id="playground">
+      <section class="report-config" aria-label="报告配置">
+        <div class="config-bar">
+          <label class="setting-field"><span>统计范围</span><select id="mode" data-query-control><option value="overview">常用统计</option><option value="detailed">详细统计</option><option value="full">全量统计（本机）</option></select></label>
+          <label class="setting-field"><span>直方图分箱</span><select id="bins" data-query-control><option value="0">自动分箱</option><option value="10">10 个分箱</option><option value="20" selected>20 个分箱</option><option value="30">30 个分箱</option><option value="50">50 个分箱</option></select></label>
+          <label class="setting-field"><span>报告语言</span><select id="language" data-query-control><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
+          <label class="setting-field"><span>外观</span><select id="theme" data-query-control><option value="light">明亮</option><option value="dark">深色</option><option value="auto">跟随系统</option></select></label>
+          <label class="toggle" id="correlation-control" title="最多 20 个数值列"><input id="correlations" type="checkbox" checked data-query-control aria-describedby="correlation-limit"/>相关性分析<span id="correlation-limit" class="visually-hidden">最多 20 个数值列</span></label>
+          <button id="recompute" class="button button-primary" data-query-control>重新生成</button>
+        </div>
+        <section id="full-settings" class="full-settings" aria-label="全量统计配置" hidden>
+          <div class="settings-grid">
+            <label class="setting-field"><span>时间索引</span><select id="time-index" data-query-control><option value="">不指定</option></select></label>
+            <label class="setting-field"><span>排序列</span><select id="order-by" data-query-control><option value="">按时间索引排序</option></select></label>
+          </div>
+          <details class="role-settings" id="role-settings">
+            <summary>列角色</summary>
+            <p>文件与图像路径须位于本机引擎的数据目录内。</p>
+            <div class="settings-grid role-fields" id="role-fields"></div>
+          </details>
+          <div class="settings-links">
+            <a href="https://github.com/antvis/data-profiling/blob/main/README.zh-CN.md#本机全量统计" target="_blank" rel="noreferrer">安装指南</a>
+            <a id="local-playground" href="http://127.0.0.1:5174/" target="_blank" rel="noreferrer">打开本机体验页</a>
+          </div>
+        </section>
+      </section>
       <div id="error" class="error" role="alert" hidden></div>
       <div class="workspace" aria-busy="true">
         <section class="panel data-panel" id="drop-zone" aria-labelledby="data-heading">
@@ -60,42 +85,11 @@
         <section class="panel report-panel" aria-labelledby="report-heading">
           <div class="panel-header">
             <div class="panel-title"><svg aria-hidden="true"><use href="#icon-chart"/></svg><h2 id="report-heading">画像报告</h2><span id="report-state" class="state" hidden></span></div>
-            <button id="download" class="button" disabled><svg aria-hidden="true"><use href="#icon-download"/></svg>导出 HTML</button>
-          </div>
-          <details class="report-settings">
-            <summary>
-              <svg aria-hidden="true"><use href="#icon-settings"/></svg>报告设置
-              <span id="mode-summary">常用统计</span><svg class="settings-chevron" aria-hidden="true"><use href="#icon-chevron"/></svg>
-            </summary>
-            <div class="settings-content">
-              <div class="settings-grid">
-                <label class="setting-field"><span>统计范围</span><select id="mode" data-query-control><option value="overview">常用统计</option><option value="detailed">详细统计</option><option value="full">全量统计（本机）</option></select></label>
-                <label class="setting-field"><span>直方图分箱</span><select id="bins" data-query-control><option value="0">自动分箱</option><option value="10">10 个分箱</option><option value="20" selected>20 个分箱</option><option value="30">30 个分箱</option><option value="50">50 个分箱</option></select></label>
-                <label class="setting-field"><span>报告语言</span><select id="language" data-query-control><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
-                <label class="setting-field"><span>外观</span><select id="theme" data-query-control><option value="light">明亮</option><option value="dark">深色</option><option value="auto">跟随系统</option></select></label>
-              </div>
-              <section id="full-settings" class="full-settings" aria-label="全量统计配置" hidden>
-                <div class="settings-grid">
-                  <label class="setting-field"><span>时间索引</span><select id="time-index" data-query-control><option value="">不指定</option></select></label>
-                  <label class="setting-field"><span>排序列</span><select id="order-by" data-query-control><option value="">按时间索引排序</option></select></label>
-                </div>
-                <details class="role-settings" id="role-settings">
-                  <summary>列角色</summary>
-                  <p>文件与图像路径须位于本机引擎的数据目录内。</p>
-                  <div class="settings-grid role-fields" id="role-fields"></div>
-                </details>
-                <div class="settings-links">
-                  <a href="https://github.com/antvis/data-profiling/blob/main/README.zh-CN.md#本机全量统计" target="_blank" rel="noreferrer">安装指南</a>
-                  <a id="local-playground" href="http://127.0.0.1:5174/" target="_blank" rel="noreferrer">打开本机体验页</a>
-                </div>
-              </section>
-              <label class="toggle" id="correlation-control" title="最多 20 个数值列"><input id="correlations" type="checkbox" checked data-query-control aria-describedby="correlation-limit"/>相关性分析<span id="correlation-limit" class="visually-hidden">最多 20 个数值列</span></label>
-              <div class="settings-actions">
-                <a href="https://github.com/antvis/data-profiling/blob/main/docs/metrics.md" target="_blank" rel="noreferrer">指标目录</a>
-                <button id="recompute" class="button button-primary" data-query-control>重新生成</button>
-              </div>
+            <div class="panel-actions">
+              <a class="icon-button" href="https://github.com/antvis/data-profiling/blob/main/docs/metrics.md" target="_blank" rel="noreferrer" aria-label="指标目录" title="指标目录"><svg aria-hidden="true"><use href="#icon-list"/></svg></a>
+              <button id="download" class="button" disabled><svg aria-hidden="true"><use href="#icon-download"/></svg>导出 HTML</button>
             </div>
-          </details>
+          </div>
           <div class="report-body">
             <iframe id="report" title="数据画像报告预览" sandbox="allow-same-origin" hidden></iframe>
             <div id="report-loading" class="report-loading" role="status"><svg aria-hidden="true"><use href="#icon-chart"/></svg><span id="loading-message">正在生成报告…</span></div>

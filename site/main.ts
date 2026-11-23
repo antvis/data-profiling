@@ -325,7 +325,6 @@ async function upload(file: File) {
 
 modeInput.addEventListener('change', () => {
   const full = modeInput.value === 'full';
-  element('mode-summary').textContent = modeInput.selectedOptions[0].label;
   element('full-settings').hidden = !full;
   element('correlation-control').hidden = full;
   if (full) status.textContent = '配置完成后点击重新生成';
