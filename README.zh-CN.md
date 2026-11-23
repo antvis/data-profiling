@@ -117,11 +117,29 @@ npm run dev:site
 npm run build:site
 ```
 
-`site/` 是静态体验界面，构建到 `build/`，与库的 `dist/` 输出分开。默认载入 128 条中文订单，左侧分页预览数据，右侧复用 `renderReport`。支持上传 CSV（含表头）、JSON、Parquet，最大 20 MB、200 列；支持切换常用/详细统计、分箱数、相关性、语言和主题，并导出 HTML 报告。
+`site/` 是静态体验界面，构建到 `build/`，与库的 `dist/` 输出分开。默认载入 128 条中文订单，左侧分页预览数据，右侧复用 `renderReport`。支持上传 CSV（含表头）、JSON、Parquet，最大 20 MB、200 列。可以切换常用统计、详细统计或本机全量统计，调整分箱数、语言和主题，并导出 HTML 报告。
 
-数据在浏览器内由 DuckDB-Wasm 计算，不发送到服务器。计算引擎首次从固定版本的 CDN 载入，需要网络。体验页复用原生计划和分布计算，不运行 Python 专项算法；相关性计算覆盖前 20 个数值列。预览每页 25 行，统计使用完整数据。上传解析失败会回滚并保留当前数据。
+常用和详细统计由浏览器内的 DuckDB-Wasm 计算，相关性覆盖前 20 个数值列。Wasm 引擎首次从固定版本的 CDN 载入。预览每页 25 行，统计使用完整数据。上传解析失败会回滚并保留当前数据。
 
 推送到 `main` 后，[GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) 自动安装依赖、运行测试、构建并部署到 GitHub Pages，也支持手动触发。资源使用相对路径，支持自定义域名。仓库的 Settings → Pages 需要启用 GitHub Actions 发布来源；组织 Free 套餐下，Pages 需要公开仓库。
+
+### 本机全量统计
+
+安装仓库依赖后，在仓库目录配置 Python 并启动本机引擎。
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r python-requirements.txt
+PROFILING_PYTHON=.venv/bin/python npm run full:site
+```
+
+打开 [本机体验页](http://127.0.0.1:5174/)，或在官网允许浏览器连接本机引擎。选择「全量统计（本机）」，设置需要的列角色、时间索引和排序列，再点击「重新生成」。引擎调用 `profile()` 的完整指标目录，报告显示适用于当前数据的指标及其数量。数据留在设备上，本机引擎只监听回环地址。
+
+预设订单已设置列角色和时间索引，并自带附件和图片。选择全量统计后点击「重新生成」即可看到 149/149。
+
+上传的数据使用文件和图像角色时需要授权目录。在上述启动命令末尾加 `-- "/文件目录的绝对路径"`。数据里的路径可以是目录内的相对路径或绝对路径。引擎会从实际文件读取大小、时间和图像元数据。
+
+### 测试与基准
 
 Node.js 22.13 或以上：
 

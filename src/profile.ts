@@ -31,6 +31,7 @@ export interface ProfileOptions extends Omit<ProfilingOptions, 'semantics'> {
   timeIndex?: string;
   orderBy?: readonly string[];
   python?: string;
+  fileRoot?: string;
   quantiles?: readonly number[];
   bins?: number;
   maxBins?: number;
@@ -179,6 +180,7 @@ export async function profile(
     'timeIndex',
     'orderBy',
     'python',
+    'fileRoot',
     'quantiles',
     'bins',
     'maxBins',
@@ -194,7 +196,7 @@ export async function profile(
     if (!optionNames.includes(key)) throw new Error(`Unknown profiling option: ${key}`);
   for (const key of ['metrics', 'quantiles', 'stopWords', 'orderBy'] as const)
     if (options[key] !== undefined && !Array.isArray(options[key])) throw new Error(`Invalid ${key}`);
-  for (const key of ['timeIndex', 'python'] as const)
+  for (const key of ['timeIndex', 'python', 'fileRoot'] as const)
     if (options[key] !== undefined && (typeof options[key] !== 'string' || !options[key]))
       throw new Error(`Invalid ${key}`);
   const names = new Set(columns.map((column) => column.name));

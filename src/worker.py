@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from functools import lru_cache
 from itertools import combinations
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -164,11 +165,25 @@ def file_stat(path):
     return os.stat(path)
 
 
+def file_path(path, root):
+    if root is None:
+        return path
+    directory = Path(root).resolve(strict=True)
+    if not directory.is_dir():
+        raise NotADirectoryError("fileRoot must be a directory")
+    resolved = (directory / path).resolve()
+    if not resolved.is_relative_to(directory):
+        raise ValueError(f"File is outside fileRoot: {path}")
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Cannot read a regular file: {path}")
+    return resolved
+
+
 def file_stats(counts, options, wanted):
     sizes, dates = Counter(), {name: Counter() for name in ["modified", "access", "metadata_change"] if f"file_{name}_time_counts" in wanted}
     per_file = []
     for path, count in sorted(counts.items()):
-        stat = file_stat(path)
+        stat = file_stat(file_path(path, options.get("fileRoot")))
         sizes[stat.st_size] += count
         per_file.append({"path": path, "bytes": stat.st_size, "count": count})
         for name, timestamp in [("modified", stat.st_mtime), ("access", stat.st_atime), ("metadata_change", stat.st_ctime)]:
@@ -197,11 +212,11 @@ def image_info(path, exif, hash_image):
         return {}
 
 
-def image_stats(counts, wanted):
+def image_stats(counts, wanted, options):
     dimensions, hashes, tags, exif_values = Counter(), Counter(), Counter(), defaultdict(Counter)
     truncated = 0
     for path, count in counts.items():
-        info = image_info(path, any(name.startswith("exif_") for name in wanted), "duplicate_image_hash_count" in wanted)
+        info = image_info(file_path(path, options.get("fileRoot")), any(name.startswith("exif_") for name in wanted), "duplicate_image_hash_count" in wanted)
         truncated += count if info.get("truncated", False) else 0
         if "size" in info:
             dimensions[info["size"]] += count
@@ -270,7 +285,7 @@ def grouped(task, options):
     if kind in {"file", "image"} and any(name.startswith("file_") for name in wanted):
         stats.update(file_stats(counts, options, wanted))
     if kind == "image" and any("image" in name or name.startswith("exif_") for name in wanted):
-        stats.update(image_stats(counts, wanted))
+        stats.update(image_stats(counts, wanted, options))
     return {name: value for name, value in stats.items() if name in wanted}
 
 
@@ -293,7 +308,7 @@ def correlations(frame, roles, wanted):
     categorical = [name for name in frame if roles[name] in {"categorical", "boolean"} and 1 < frame[name].nunique() <= 100]
     frame = frame.copy()
     for name in numeric:
-        frame[name] = frame[name].astype(float)
+        frame[name] = frame[name].astype(float).replace([np.inf, -np.inf], np.nan)
     result = []
     for metric, method in [("spearman_rho", "spearman"), ("kendall_tau", "kendall")]:
         if metric in wanted:

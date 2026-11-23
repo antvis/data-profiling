@@ -3,10 +3,12 @@ import ehWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import mvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
 import { renderReport, type ReportOptions } from '../src/report.js';
 import { kind, type ProfileColumn } from '../src/plan.js';
+import { ALL_METRICS } from '../src/metrics.js';
 import type { ProfilingConnection } from '../src/profile.js';
 import type { ProfileResult } from '../src/types.js';
-import { fileFormat, plainValue, profileDataset, type PlaygroundOptions } from './profiling.js';
+import { fileFormat, plainValue, profileDataset, profileFullDataset, type FullProfileOptions, type PlaygroundOptions } from './profiling.js';
 import sampleSQL from './sample.sql?raw';
+import sampleOptions from './sample-options.json';
 import './style.css';
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -18,6 +20,9 @@ const themeInput = element<HTMLSelectElement>('theme');
 const modeInput = element<HTMLSelectElement>('mode');
 const binsInput = element<HTMLSelectElement>('bins');
 const correlationsInput = element<HTMLInputElement>('correlations');
+const timeIndexInput = element<HTMLSelectElement>('time-index');
+const orderByInput = element<HTMLSelectElement>('order-by');
+const roleFields = element('role-fields');
 const status = element('execution-status');
 const reportState = element('report-state');
 const download = element<HTMLButtonElement>('download');
@@ -27,10 +32,12 @@ let database: duckdb.AsyncDuckDB | undefined;
 let connection: duckdb.AsyncDuckDBConnection | undefined;
 let columns: ProfileColumn[] = [];
 let results: ProfileResult[] = [];
+let fullResults = false;
 let total = 0;
 let page = 0;
 let busy = false;
 let sourceName = '电商订单 · 预设数据';
+let sourceFile: File | undefined;
 let currentReport = '';
 
 const quote = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -44,6 +51,57 @@ const adapter: ProfilingConnection = {
 
 function options(): PlaygroundOptions {
   return { mode: modeInput.value as PlaygroundOptions['mode'], bins: Number(binsInput.value), correlations: correlationsInput.checked };
+}
+
+type ColumnRole = NonNullable<FullProfileOptions['types']>[string];
+const stringRoles: readonly [ColumnRole, string][] = [
+  ['text', '文本'], ['date', '日期字符串'], ['url', 'URL'], ['path', '路径'], ['file', '文件'], ['image', '图像'],
+];
+const sampleRoles: Partial<Record<string, string>> = sampleOptions.types;
+
+function selectedRoles(): NonNullable<FullProfileOptions['types']> {
+  return Object.fromEntries([...roleFields.querySelectorAll('select')]
+    .filter((select) => select.value)
+    .map((select) => [select.dataset.column!, select.value as ColumnRole]));
+}
+
+function updateTimeIndex() {
+  const previous = timeIndexInput.value;
+  const types = selectedRoles();
+  const eligible = columns.filter((column) => {
+    const role = Object.hasOwn(types, column.name) ? types[column.name] : kind(column.type);
+    return role === 'numeric' || role === 'date';
+  });
+  timeIndexInput.replaceChildren(new Option('不指定', ''), ...eligible.map(({ name }) => new Option(name, name)));
+  if (eligible.some(({ name }) => name === previous)) timeIndexInput.value = previous;
+}
+
+function resetFullSettings() {
+  timeIndexInput.value = '';
+  orderByInput.replaceChildren(new Option('按时间索引排序', ''), ...columns.map(({ name }) => new Option(name, name)));
+  const fields: HTMLLabelElement[] = [];
+  for (const column of columns) {
+    const type = kind(column.type);
+    if (type !== 'string' && type !== 'numeric') continue;
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    const select = document.createElement('select');
+    const roles = type === 'string' ? stringRoles : [['timeseries', '时序数值']] as const;
+    label.className = 'setting-field';
+    title.textContent = column.name;
+    select.dataset.column = column.name;
+    select.setAttribute('data-query-control', '');
+    select.disabled = busy;
+    select.append(new Option(type === 'string' ? '类别（默认）' : '数值（默认）', ''),
+      ...roles.map(([role, name]) => new Option(name, role)));
+    if (!sourceFile) select.value = sampleRoles[column.name] ?? '';
+    label.append(title, select);
+    fields.push(label);
+  }
+  roleFields.replaceChildren(...fields);
+  element('role-settings').hidden = !fields.length;
+  updateTimeIndex();
+  if (!sourceFile) timeIndexInput.value = sampleOptions.timeIndex;
 }
 
 function setBusy(value: boolean) {
@@ -73,7 +131,7 @@ async function run(operation: () => Promise<void>) {
   try {
     await operation();
     render();
-    status.textContent = `全量计算 · ${Math.round(performance.now() - started).toLocaleString()} ms`;
+    status.textContent = `${fullResults ? '本机全量统计' : '浏览器计算'} · ${Math.round(performance.now() - started).toLocaleString()} ms`;
   } catch (error) {
     showError(error);
     reportState.textContent = currentReport ? '未更新' : '生成失败';
@@ -149,16 +207,27 @@ async function updatePreview() {
 }
 
 async function compute() {
-  element('loading-message').textContent = '正在计算已有数据，报告即将更新。';
-  results = (await profileDataset(adapter, 'input', columns, options())).map((row) => ({ ...row, table_name: sourceName }));
+  const full = modeInput.value === 'full';
+  element('loading-message').textContent = full ? '本机引擎正在计算，报告即将更新。' : '正在计算已有数据，报告即将更新。';
+  const calculated = full ? await profileFullDataset(sourceFile, {
+    bins: Number(binsInput.value),
+    types: selectedRoles(),
+    timeIndex: timeIndexInput.value || undefined,
+    orderBy: orderByInput.value ? [orderByInput.value] : undefined,
+  }) : await profileDataset(adapter, 'input', columns, options());
+  results = calculated.map((row) => ({ ...row, table_name: sourceName }));
+  fullResults = full;
 }
 
-async function updateDataset(name: string, format: string) {
+async function updateDataset(name: string, format: string, file?: File) {
   sourceName = name;
+  sourceFile = file;
   currentReport = '';
+  results = [];
   report.hidden = true;
   page = 0;
   columns = (await adapter.runAndReadAll("SELECT name,type FROM pragma_table_info('input')")).getRowObjectsJson() as ProfileColumn[];
+  resetFullSettings();
   total = Number((await adapter.runAndReadAll('SELECT count(*)::VARCHAR AS n FROM input')).getRowObjectsJson()[0].n);
   element('dataset-name').textContent = sourceName;
   element('dataset-meta').textContent = `${total.toLocaleString()} 行 · ${columns.length} 列 · 完整数据参与计算`;
@@ -185,7 +254,9 @@ function render() {
   report.srcdoc = currentReport.replace('<head>', '<head><base href="about:srcdoc">');
   report.hidden = false;
   loading.hidden = true;
-  reportState.textContent = `${results.length} 项指标`;
+  reportState.textContent = fullResults
+    ? `${new Set(results.map((row) => row.metric)).size} / ${ALL_METRICS.length} 种指标`
+    : `${results.length} 项指标`;
   reportState.classList.add('ready');
   download.disabled = busy;
 }
@@ -218,11 +289,22 @@ async function upload(file: File) {
       if (transaction) await connection!.query('ROLLBACK');
       await database!.dropFile(name);
     }
-    await updateDataset(file.name, format.toUpperCase());
+    await updateDataset(file.name, format.toUpperCase(), file);
   });
 }
 
-for (const input of [modeInput, binsInput, correlationsInput]) input.addEventListener('change', () => void run(compute));
+modeInput.addEventListener('change', () => {
+  const full = modeInput.value === 'full';
+  element('full-settings').hidden = !full;
+  element('correlation-control').hidden = full;
+  if (full) status.textContent = '配置完成后点击重新生成';
+  else void run(connection ? compute : restore);
+});
+element('local-playground').hidden = location.origin === 'http://127.0.0.1:5174';
+roleFields.addEventListener('change', updateTimeIndex);
+for (const input of [binsInput, correlationsInput]) input.addEventListener('change', () => {
+  if (modeInput.value !== 'full') void run(connection ? compute : restore);
+});
 languageInput.addEventListener('change', render);
 themeInput.addEventListener('change', () => { document.documentElement.dataset.theme = themeInput.value; render(); });
 element('restore').addEventListener('click', () => void run(restore));
@@ -252,4 +334,5 @@ download.addEventListener('click', () => {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
+modeInput.value = 'overview';
 void run(restore);

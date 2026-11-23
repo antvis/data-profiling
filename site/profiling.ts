@@ -1,12 +1,39 @@
 import { additionalMetricIds, createProfilingPlan, kind, scalar, type ProfileColumn, type MetricConfig } from '../src/plan.js';
 import { nativeDistributions } from '../src/distributions.js';
-import type { ProfilingConnection } from '../src/profile.js';
+import type { ProfileOptions, ProfilingConnection } from '../src/profile.js';
 import type { ProfileResult } from '../src/types.js';
 
 export interface PlaygroundOptions {
   mode: 'overview' | 'detailed';
   bins: number;
   correlations: boolean;
+}
+
+export type FullProfileOptions = Pick<ProfileOptions, 'types' | 'timeIndex' | 'orderBy' | 'bins'>;
+
+export async function profileFullDataset(file: File | undefined, options: FullProfileOptions): Promise<ProfileResult[]> {
+  const form = new FormData();
+  form.set('options', JSON.stringify(options));
+  if (file) form.set('dataset', file);
+  const request: RequestInit & { targetAddressSpace: 'loopback' } = {
+    method: 'POST',
+    headers: { 'X-Data-Profiling': '1' },
+    body: form,
+    credentials: 'omit',
+    redirect: 'error',
+    targetAddressSpace: 'loopback',
+  };
+  let response: Response;
+  try {
+    response = await fetch('http://127.0.0.1:5174/api/full-profile', request);
+  } catch {
+    throw new Error('无法连接本机引擎。请运行 npm run full:site，允许浏览器访问本机，或打开本机体验页。');
+  }
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !Array.isArray(data?.results)) {
+    throw new Error(typeof data?.error === 'string' ? data.error : '本机引擎返回了无法读取的结果。');
+  }
+  return data.results;
 }
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;

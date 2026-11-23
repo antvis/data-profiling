@@ -117,11 +117,29 @@ npm run dev:site
 npm run build:site
 ```
 
-The static playground in `site/` builds to `build/`, separately from the library's `dist/`. It starts with 128 sample orders and shows paginated data on the left and the existing `renderReport` output on the right. Upload CSV (with headers), JSON or Parquet up to 20 MB and 200 columns. Change the metric scope, histogram bins, correlations, language and theme, or download an offline HTML report.
+The static playground in `site/` builds to `build/`, separately from the library's `dist/`. It starts with 128 sample orders and shows paginated data on the left and the existing `renderReport` output on the right. Upload CSV (with headers), JSON or Parquet up to 20 MB and 200 columns. Choose overview, detailed, or local full profiling, adjust histogram bins, language and theme, and export an offline HTML report.
 
-DuckDB-Wasm computes data in the browser; uploaded data is not sent to a server. The pinned engine loads from a CDN on first use and needs a network connection. The playground reuses native plans and distributions without Python algorithms. Correlations cover the first 20 numeric columns. Each preview page shows 25 rows; statistics use the full dataset. Failed imports roll back and retain the current dataset.
+DuckDB-Wasm computes overview and detailed statistics in the browser. Their correlations cover the first 20 numeric columns. The pinned Wasm engine loads from a CDN on first use. Each preview page shows 25 rows, and statistics use the full dataset. Failed imports roll back and retain the current dataset.
 
 Pushes to `main` trigger [GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) to install dependencies, run tests, build and deploy to GitHub Pages. Manual runs are also supported. Assets use relative paths, including on the custom domain. Enable GitHub Actions as the publishing source in Settings → Pages; Pages requires a public repository on an organization Free plan.
+
+### Local full profiling
+
+Install the project dependencies, then set up Python and start the local engine from the repository.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r python-requirements.txt
+PROFILING_PYTHON=.venv/bin/python npm run full:site
+```
+
+Open the [local playground](http://127.0.0.1:5174/) or allow the public playground to connect to the local engine when the browser prompts. Select 全量统计（本机）, assign column roles, a time index or a sort column as needed, and regenerate the report. The engine calls `profile()` with the full catalog. The report counts the metric IDs that apply to the data and configuration. Data stays on the device, and the engine listens on loopback.
+
+The sample orders include preset roles, a time index, and bundled files. Select full profiling and regenerate to see 149/149.
+
+File and image roles on uploaded data require a directory selected at startup. Append `-- "/absolute/path/to/files"` to the command above. Dataset paths can be relative to that directory or absolute paths inside it. The engine reads sizes, timestamps and image metadata from the original files.
+
+### Tests and benchmarks
 
 Node.js 22.13 or later:
 

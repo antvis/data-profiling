@@ -1,0 +1,2 @@
+Data Profiling sample receipt
+Order status: shipped

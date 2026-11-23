@@ -37,7 +37,7 @@ Python 3.10+ 依赖见 `python-requirements.txt`。默认解释器为 `python3`�
 | Unicode 类别 | `unicode_category_distinct_count`, `unicode_category_frequencies`, `unicode_category_character_counts` | Unicode 类别数、频数、每类字符频数。 |
 | Unicode 区块 | `unicode_block_distinct_count`, `unicode_block_frequencies`, `unicode_block_character_counts` | Unicode 区块数、频数、每区块字符频数。 |
 | Unicode 脚本 | `unicode_script_distinct_count`, `unicode_script_frequencies`, `unicode_script_character_counts` | Unicode 脚本数、频数、每脚本字符频数。 |
-| 相关性 | `pearson_r`, `spearman_rho`, `kendall_tau`, `cramers_v`, `phi_k`, `auto_correlation` | 数值 Pearson/Spearman/Kendall；经偏差校正 Cramér V；Phi-K；数值对用 Spearman、类别/混合对用 Cramér V 的自动选择。类别不同值须为 2–100；混合数值用 10 个等宽箱。 |
+| 相关性 | `pearson_r`, `spearman_rho`, `kendall_tau`, `cramers_v`, `phi_k`, `auto_correlation` | 数值 Pearson/Spearman/Kendall、经偏差校正的 Cramér V 和 Phi-K。自动选择对数值列对使用 Spearman，对类别和混合列对使用 Cramér V。数值列使用有限值，混合列对的数值使用 10 个等宽箱。类别不同值须为 2–100。 |
 | URL | `url_scheme_counts`, `url_netloc_counts`, `url_path_counts`, `url_query_counts`, `url_fragment_counts` | 按 Python `urllib.parse.urlsplit` 拆分，带权统计。 |
 | 路径 | `path_common_prefix`, `path_stem_counts`, `path_suffix_counts`, `path_basename_counts`, `path_parent_counts`, `path_drive_counts` | 依宿主平台 `os.path` 语义；公共字符前缀，无前缀时为 `No common prefix`。 |
 | 路径基数 | `path_stem_distinct_count`, `path_suffix_distinct_count`, `path_basename_distinct_count`, `path_parent_distinct_count`, `path_drive_distinct_count` | 各路径部件的不同值数。 |
@@ -68,6 +68,7 @@ Python 3.10+ 依赖见 `python-requirements.txt`。默认解释器为 `python3`�
 | `significance` | `0.05`，须在 `(0,1)`。 |
 | `autolag`, `maxlag` | `AIC`，自动最大滞后；也支持 `BIC`、`t-stat` 或 null。 |
 | `memoryDeep` | `false`，传递给 Pandas 内存测量。 |
+| `fileRoot` | 可选的文件目录。文件和图像统计在此目录下解析相对路径，校验实际文件路径，包括符号链接的目标。 |
 
 `profile` 将浮点 NaN 视为缺失；±Infinity 参与边界、均值、求和和分位，直方图/卡方只使用有限值，含无穷的方差/偏度等返回 NaN。`createProfilingPlan` 默认 `semantics: 'finite'`，仅将 SQL NULL 计为缺失，数值聚合排除非有限值；`semantics: 'extended'` 使用前述 NaN 和无穷值口径。Pandas 与 DuckDB 的浮点聚合可能有末位误差；小数中位数及离散度沿用 DuckDB 原生精度。并列类别按原生值升序决定顺序和布尔众数。类型来自 schema 或显式角色。
 

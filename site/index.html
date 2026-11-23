@@ -24,14 +24,29 @@
       <span class="version">v0.4.0</span>
     </header>
     <main id="playground">
-      <div class="intro"><div><div class="eyebrow">DATA PROFILING PLAYGROUND</div><h1>从数据，到洞察。</h1><p>上传一份数据，调整统计配置，实时查看你的数据画像。</p></div><div class="privacy"><svg><use href="#icon-shield"/></svg><span>数据仅在浏览器内处理<span>文件不会离开你的设备</span></span></div></div>
+      <div class="intro"><div><div class="eyebrow">DATA PROFILING PLAYGROUND</div><h1>从数据，到洞察。</h1><p>上传一份数据，调整统计配置，实时查看你的数据画像。</p></div><div class="privacy"><svg><use href="#icon-shield"/></svg><span>数据仅在此设备上处理<span>文件不会离开你的设备</span></span></div></div>
       <section class="config-bar" aria-label="报告配置">
-        <label class="control"><span>统计范围</span><select id="mode" data-query-control><option value="overview">常用统计</option><option value="detailed">详细统计</option></select></label>
+        <label class="control"><span>统计范围</span><select id="mode" data-query-control><option value="overview">常用统计</option><option value="detailed">详细统计</option><option value="full">全量统计（本机）</option></select></label>
         <label class="control"><span>直方图分箱</span><select id="bins" data-query-control><option value="0">自动分箱</option><option value="10">10 个分箱</option><option value="20" selected>20 个分箱</option><option value="30">30 个分箱</option><option value="50">50 个分箱</option></select></label>
         <label class="control"><span>报告语言</span><select id="language" data-query-control><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
         <label class="control"><span>外观</span><select id="theme" data-query-control><option value="light">明亮</option><option value="dark">深色</option><option value="auto">跟随系统</option></select></label>
-        <label class="toggle"><input id="correlations" type="checkbox" checked data-query-control/><span class="switch" aria-hidden="true"></span><span>相关性分析<span class="control-hint">最多 20 个数值列</span></span></label>
+        <label class="toggle" id="correlation-control"><input id="correlations" type="checkbox" checked data-query-control/><span class="switch" aria-hidden="true"></span><span>相关性分析<span class="control-hint">最多 20 个数值列</span></span></label>
         <button id="recompute" class="button button-primary" data-query-control><svg><use href="#icon-refresh"/></svg>重新生成</button>
+      </section>
+      <section id="full-settings" class="full-settings" aria-label="全量统计配置" hidden>
+        <div class="full-settings-bar">
+          <div>
+            <h2>本机引擎</h2>
+            <p>使用完整指标目录。配置后点击「重新生成」。<a href="https://github.com/antvis/data-profiling/blob/main/README.zh-CN.md#本机全量统计" target="_blank" rel="noreferrer">安装与启动</a><span id="local-playground"> · <a href="http://127.0.0.1:5174/" target="_blank" rel="noreferrer">打开本机体验页</a></span></p>
+          </div>
+          <label class="setting-field"><span>时间索引</span><select id="time-index" data-query-control><option value="">不指定</option></select></label>
+          <label class="setting-field"><span>排序列</span><select id="order-by" data-query-control><option value="">按时间索引排序</option></select></label>
+        </div>
+        <details class="role-settings" id="role-settings">
+          <summary>列角色</summary>
+          <p>指定日期字符串、URL、路径、文件、图像或时序数值。文件和图像的路径须在本机引擎指定的目录内。</p>
+          <div class="role-fields" id="role-fields"></div>
+        </details>
       </section>
       <div id="error" class="error" role="alert" hidden></div>
       <div class="workspace" aria-busy="true">
@@ -45,7 +60,7 @@
         </section>
         <section class="panel report-panel" aria-labelledby="report-heading"><div class="panel-header"><div class="panel-title"><span class="panel-icon"><svg><use href="#icon-chart"/></svg></span><h2 id="report-heading">数据画像报告</h2><span id="report-state" class="state">准备中</span></div><button id="download" class="button button-small" disabled><svg><use href="#icon-download"/></svg>导出 HTML</button></div><div class="report-body"><iframe id="report" title="数据画像报告预览" sandbox="allow-same-origin" hidden></iframe><div id="report-loading" class="report-loading" role="status"><div class="loading-art"><span></span><span></span><span></span><span></span><span></span></div><h3>正在准备数据画像</h3><p id="loading-message">首次使用需要加载计算引擎，请稍等片刻。</p></div></div></section>
       </div>
-      <footer class="site-footer"><span>由 <a href="https://duckdb.org/" target="_blank" rel="noreferrer">DuckDB</a> 与 Data Profiling 驱动</span><span id="execution-status" role="status" aria-live="polite">正在加载计算引擎…</span><span>支持原生统计指标 · <a href="https://github.com/antvis/data-profiling/blob/main/docs/metrics.md" target="_blank" rel="noreferrer">查看指标目录</a></span></footer>
+      <footer class="site-footer"><span>由 <a href="https://duckdb.org/" target="_blank" rel="noreferrer">DuckDB</a> 与 Data Profiling 驱动</span><span id="execution-status" role="status" aria-live="polite">正在加载计算引擎…</span><span><a href="https://github.com/antvis/data-profiling/blob/main/docs/metrics.md" target="_blank" rel="noreferrer">查看指标目录</a></span></footer>
     </main>
     <script type="module" src="/main.ts"></script>
   </body>
