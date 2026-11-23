@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { profile } from 'data_profiling';
+import { collectReportData, profile } from 'data_profiling';
 
 const siteOrigin = 'https://data-profiling.antv.vision';
 const sampleFileRoot = fileURLToPath(new URL('./sample-files/', import.meta.url));
@@ -66,7 +66,9 @@ async function profileForm(form, { python, fileRoot: uploadedFileRoot }) {
     }
     const columns = (await connection.runAndReadAll("SELECT name,type FROM pragma_table_info('input')")).getRowObjectsJson();
     if (!columns.length || columns.length > 200) throw new Error('请提供包含 1–200 列的数据。');
-    return await profile(connection, 'input', columns, { bins, maxBins: 50, types, timeIndex, orderBy, python, fileRoot });
+    const results = await profile(connection, 'input', columns, { bins, maxBins: 50, types, timeIndex, orderBy, python, fileRoot });
+    const tableData = await collectReportData(connection, 'input', columns, { timeIndex, orderBy });
+    return { results, tableData };
   } finally {
     connection?.closeSync();
     instance.closeSync();
@@ -105,7 +107,7 @@ export function createFullProfileHandler(settings = {}) {
         request.resume();
         return respond(response, 413, { error: '全量统计请求超过大小限制。' });
       }
-      respond(response, 200, { results: await profileForm(form, settings) });
+      respond(response, 200, await profileForm(form, settings));
     } catch (error) {
       const message = error instanceof Error ? error.message.trim().split(/\r?\n/).at(-1) : '本机画像失败。';
       respond(response, 400, {

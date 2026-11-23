@@ -87,7 +87,21 @@ await writeFile('orders-report.html', html, 'utf8');
 
 详情表保留所有已提供的精确值和指标参数，包括原始整数、小数和时间字符串。“未提供”表示缺少该指标，“未定义”表示计算结果无定义。图表使用近似坐标，部分图表只预览高频值。
 
-渲染器仅使用已有的画像结果，支持多表，校验协议 v1 输入，并对表名、列名、值和选项做 HTML 转义。报告可离线打开，使用原生展开和折叠交互。样本行、逐行散点图和缺失模式矩阵需要协议 v1 之外的逐行数据。
+渲染器支持多表，校验协议 v1 输入，并对表名、列名、值和选项做 HTML 转义。报告可离线打开，使用原生展开和折叠交互。质量观察使用已有指标识别高基数、分布偏斜、类别不均衡和强关联。
+
+采集同一张表的报告数据后，HTML 可以展示首尾样本、重复组的具体取值、数值散点图、缺失位置矩阵和缺失相关性热图。指定时间索引后可以绘制时间序列走势。已有的缺口起止点也可单独绘图。可选的 `run` 会记录生成时间、库版本、分析耗时和统计配置。
+
+```ts
+import { collectReportData } from 'data_profiling';
+
+const tableData = await collectReportData(connection, 'orders', columns, { timeIndex: 'order_id' });
+const html = renderReport(results, {
+  tableData: [tableData],
+  run: { generatedAt: new Date().toISOString(), libraryVersion: '0.5.0', configuration: { timeIndex: 'order_id' } },
+});
+```
+
+`collectReportData` 使用与统计结果一致的表名。需要指定行顺序时可设置 `orderBy`。首尾各预览最多 10 行，重复组最多展示 10 组。逐行图均匀选取最多 240 行，散点图最多展示 12 个数值列对，优先展示关联较强的列对。缺失相关性热图使用全表计算，最多展示 24 个同时存在缺失和非缺失值的列。网页预览和导出的 HTML 均包含这些章节及样本和重复组的单元格取值。
 
 报告默认使用简体中文，`language` 控制标题、指标名、参数名、类型名、图表文案和空状态，同时设置 HTML 的 `lang` 属性。原始表名、列名、数据值和自定义标题保持原样。指标 ID 可在悬浮提示中查看，未知的自定义指标沿用原名。
 

@@ -1,6 +1,7 @@
-import { additionalMetricIds, createProfilingPlan, kind, scalar, type ProfileColumn, type MetricConfig } from '../src/plan.js';
+import { additionalMetricIds, createProfilingPlan, kind, nanAsNull, scalar, type ProfileColumn, type MetricConfig } from '../src/plan.js';
 import { nativeDistributions } from '../src/distributions.js';
 import type { ProfileOptions, ProfilingConnection } from '../src/profile.js';
+import type { ReportTableData } from '../src/report-data.js';
 import type { ProfileResult } from '../src/types.js';
 
 export interface PlaygroundOptions {
@@ -11,7 +12,10 @@ export interface PlaygroundOptions {
 
 export type FullProfileOptions = Pick<ProfileOptions, 'types' | 'timeIndex' | 'orderBy' | 'bins'>;
 
-export async function profileFullDataset(file: File | undefined, options: FullProfileOptions): Promise<ProfileResult[]> {
+export async function profileFullDataset(file: File | undefined, options: FullProfileOptions): Promise<{
+  results: ProfileResult[];
+  tableData?: ReportTableData;
+}> {
   const form = new FormData();
   form.set('options', JSON.stringify(options));
   if (file) form.set('dataset', file);
@@ -33,7 +37,7 @@ export async function profileFullDataset(file: File | undefined, options: FullPr
   if (!response.ok || !Array.isArray(data?.results)) {
     throw new Error(typeof data?.error === 'string' ? data.error : '本机引擎返回了无法读取的结果。');
   }
-  return data.results;
+  return { results: data.results, tableData: data.tableData };
 }
 
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -95,7 +99,7 @@ export async function profileDataset(
   rows.push(...distributions.results);
   const source = `query_table(${literal(table)})`;
   const duplicates = (await connection.runAndReadAll(
-    `SELECT count(*)::VARCHAR AS n FROM (SELECT 1 FROM ${source} GROUP BY ${columns.map((column) => q(column.name)).join(', ')} HAVING count(*) > 1)`
+    `SELECT count(*)::VARCHAR AS n FROM (SELECT 1 FROM ${source} GROUP BY ${columns.map(nanAsNull).join(', ')} HAVING count(*) > 1)`
   )).getRowObjectsJson()[0];
   rows.push({ protocol_version: 1, table_name: table, columns: [], metric: 'duplicate_group_count', parameters: {}, value: scalar('integer', duplicates.n) });
   if (options.correlations) {

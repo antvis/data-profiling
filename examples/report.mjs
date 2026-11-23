@@ -1,7 +1,8 @@
 import { writeFile } from 'node:fs/promises';
 import { DuckDBInstance } from '@duckdb/node-api';
-import { profile } from 'data_profiling';
+import { collectReportData, profile } from 'data_profiling';
 import { renderReport } from 'data_profiling/report';
+import packageMetadata from '../package.json' with { type: 'json' };
 
 const instance = await DuckDBInstance.create(':memory:');
 const connection = await instance.connect();
@@ -17,7 +18,8 @@ try {
   const columns = (
     await connection.runAndReadAll("SELECT name,type FROM pragma_table_info('订单')")
   ).getRowObjectsJson();
-  const results = await profile(connection, '订单', columns, {
+  const started = performance.now();
+  const settings = {
     metrics: [
       'row_count', 'column_count', 'column_type_counts', 'missing_cell_count', 'missing_cell_rate',
       'duplicate_group_count', 'profiling_type', 'declared_type', 'observation_count', 'present_count',
@@ -25,9 +27,15 @@ try {
       'quantiles', 'numeric_histogram', 'value_counts', 'pearson_r',
     ],
     bins: 12,
-  });
+    timeIndex: '订单编号',
+  };
+  const results = await profile(connection, '订单', columns, settings);
+  const tableData = await collectReportData(connection, '订单', columns, settings);
   const output = process.argv[2] ?? 'orders-report.html';
-  await writeFile(output, renderReport(results, { title: '订单数据画像', language: 'zh-CN' }), 'utf8');
+  await writeFile(output, renderReport(results, {
+    title: '订单数据画像', language: 'zh-CN', tableData: [tableData],
+    run: { generatedAt: new Date().toISOString(), libraryVersion: packageMetadata.version, durationMs: performance.now() - started, configuration: settings },
+  }), 'utf8');
   console.log(output);
 } finally {
   connection.closeSync();

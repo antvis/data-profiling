@@ -1,5 +1,5 @@
 CREATE OR REPLACE TABLE input AS SELECT
-  i + 1001 AS "订单编号",
+  i + CASE WHEN i < 64 THEN 1001 ELSE 1011 END AS "订单编号",
   CASE WHEN i % 11 = 0 THEN NULL ELSE round(20 + (i % 17) * 8.75, 2)::DOUBLE END AS "金额",
   1 + i % 5 AS "件数",
   CASE WHEN i % 13 = 0 THEN NULL ELSE ['线上', '门店', '合作伙伴'][1 + i % 3] END AS "渠道",
@@ -13,4 +13,4 @@ CREATE OR REPLACE TABLE input AS SELECT
   'receipt.txt' AS "附件",
   'product.png' AS "商品图片",
   CASE WHEN i % 13 = 0 THEN NULL ELSE 25 + 4 * sin(i * 0.7) + i % 5 END AS "处理时长"
-FROM range(128) t(i)
+FROM (SELECT least(i, 126) AS i FROM range(128) t(i)) orders

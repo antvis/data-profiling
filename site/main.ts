@@ -1,7 +1,8 @@
 import * as duckdb from '@duckdb/duckdb-wasm';
 import ehWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url';
 import mvpWorker from '@duckdb/duckdb-wasm/dist/duckdb-browser-mvp.worker.js?url';
-import { renderReport, type ReportOptions } from '../src/report.js';
+import { renderReport, type ReportOptions, type ReportRun } from '../src/report.js';
+import { collectReportData, type ReportTableData } from '../src/report-data.js';
 import { kind, type ProfileColumn } from '../src/plan.js';
 import { ALL_METRICS } from '../src/metrics.js';
 import type { ProfilingConnection } from '../src/profile.js';
@@ -9,6 +10,7 @@ import type { ProfileResult } from '../src/types.js';
 import { fileFormat, plainValue, profileDataset, profileFullDataset, type FullProfileOptions, type PlaygroundOptions } from './profiling.js';
 import sampleSQL from './sample.sql?raw';
 import sampleOptions from './sample-options.json';
+import { version } from '../package.json';
 import './style.css';
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -32,6 +34,8 @@ let database: duckdb.AsyncDuckDB | undefined;
 let connection: duckdb.AsyncDuckDBConnection | undefined;
 let columns: ProfileColumn[] = [];
 let results: ProfileResult[] = [];
+let reportData: ReportTableData | undefined;
+let reportRun: ReportRun | undefined;
 let fullResults = false;
 let total = 0;
 let page = 0;
@@ -208,14 +212,23 @@ async function updatePreview() {
 
 async function compute() {
   const full = modeInput.value === 'full';
-  element('loading-message').textContent = full ? '本机引擎正在计算，报告即将更新。' : '正在计算已有数据，报告即将更新。';
-  const calculated = full ? await profileFullDataset(sourceFile, {
-    bins: Number(binsInput.value),
-    types: selectedRoles(),
+  const started = performance.now();
+  const settings = options();
+  const rowOptions = full ? {
     timeIndex: timeIndexInput.value || undefined,
     orderBy: orderByInput.value ? [orderByInput.value] : undefined,
-  }) : await profileDataset(adapter, 'input', columns, options());
-  results = calculated.map((row) => ({ ...row, table_name: sourceName }));
+  } : {};
+  const fullOptions: FullProfileOptions = { ...rowOptions, bins: settings.bins, types: full ? selectedRoles() : undefined };
+  element('loading-message').textContent = full ? '本机引擎正在计算，报告即将更新。' : '正在计算已有数据，报告即将更新。';
+  const calculated = full ? await profileFullDataset(sourceFile, fullOptions) :
+    { results: await profileDataset(adapter, 'input', columns, settings), tableData: undefined };
+  const data = calculated.tableData ?? await collectReportData(adapter, 'input', columns, rowOptions);
+  reportData = { ...data, tableName: sourceName };
+  reportRun = {
+    generatedAt: new Date().toISOString(), libraryVersion: version, durationMs: Math.round(performance.now() - started),
+    configuration: full ? { mode: 'full', ...fullOptions } : { ...settings },
+  };
+  results = calculated.results.map((row) => ({ ...row, table_name: sourceName }));
   fullResults = full;
 }
 
@@ -224,6 +237,8 @@ async function updateDataset(name: string, format: string, file?: File) {
   sourceFile = file;
   currentReport = '';
   results = [];
+  reportData = undefined;
+  reportRun = undefined;
   report.hidden = true;
   page = 0;
   columns = (await adapter.runAndReadAll("SELECT name,type FROM pragma_table_info('input')")).getRowObjectsJson() as ProfileColumn[];
@@ -244,7 +259,11 @@ function render() {
   const disclosures = [...(previous?.querySelectorAll<HTMLDetailsElement>('details[id]') ?? [])]
     .map((detail) => ({ id: detail.id, open: detail.open }));
   const scroll = previous?.scrollingElement?.scrollTop ?? 0;
-  currentReport = renderReport(results, { language, theme, title: language === 'en-US' ? 'Data profile' : '数据画像报告' });
+  currentReport = renderReport(results, {
+    language, theme, title: language === 'en-US' ? 'Data profile' : '数据画像报告',
+    tableData: reportData ? [reportData] : undefined,
+    run: reportRun,
+  });
   report.onload = () => {
     for (const { id, open } of disclosures) {
       const detail = report.contentDocument?.getElementById(id) as HTMLDetailsElement | null;

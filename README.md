@@ -87,7 +87,21 @@ await writeFile('orders-report.html', html, 'utf8');
 
 Detail tables preserve all supplied values and metric parameters, including original integer, decimal and temporal strings. “Not supplied” marks an absent metric and “Undefined” marks a computed null. Chart previews show approximate geometry and may limit the number of displayed values.
 
-The renderer supports multiple tables, validates protocol-v1 inputs and escapes table names, column names, values and options. It produces offline HTML with native expand/collapse controls using only the supplied results. Samples, row-level scatterplots and missingness matrices require row-level data beyond the current result protocol.
+The renderer supports multiple tables, validates protocol-v1 inputs and escapes table names, column names, values and options. It produces offline HTML with native expand/collapse controls. Quality observations use supplied statistics, including distinct counts, skewness, category imbalance and pairwise correlations.
+
+Collect additional report data from the same table to include row samples, duplicate groups with cell values, numeric scatterplots, missing locations and a missingness correlation heatmap. Supply a time index to draw time-series trends. Existing gap endpoints can also render on their own. The optional `run` records the analysis time, library version, duration and configuration.
+
+```ts
+import { collectReportData } from 'data_profiling';
+
+const tableData = await collectReportData(connection, 'orders', columns, { timeIndex: 'order_id' });
+const html = renderReport(results, {
+  tableData: [tableData],
+  run: { generatedAt: new Date().toISOString(), libraryVersion: '0.5.0', configuration: { timeIndex: 'order_id' } },
+});
+```
+
+`collectReportData` uses the same table name as the corresponding results. Use `orderBy` when row order matters. It previews up to 10 rows at each end of the table and up to 10 duplicate groups. The plots use up to 240 evenly spaced rows and display up to 12 numeric pairs, favoring stronger reported correlations. The missingness heatmap uses all rows for up to 24 columns containing a mix of present and missing values. Playground previews and HTML exports include these report sections, including sample and duplicate cell values.
 
 Reports default to Simplified Chinese. `language` controls headings, metric and parameter labels, type names, chart text and empty states; the HTML `lang` attribute follows it. Table names, column names, data values and custom titles stay unchanged. Machine metric IDs remain in tooltips; unknown metric IDs retain their readable names.
 

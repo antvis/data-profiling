@@ -51,10 +51,16 @@ test('local engine accepts the official origin and validates request and file bo
 test('the preset returns all metric IDs using its bundled files', { skip: !python }, async (t) => {
   const endpoint = await startEngine(t, { python });
   const response = await request(endpoint, sampleOptions);
-  const { results, error } = await response.json();
+  const { results, tableData, error } = await response.json();
   assert.equal(response.status, 200, error);
   assert.deepEqual(new Set(results.map(({ metric }) => metric)), new Set(ALL_METRICS));
   assert.equal(results.find(({ metric }) => metric === 'row_count').value.value, '128');
+  assert.equal(results.find(({ metric }) => metric === 'duplicate_group_count').value.value, '1');
+  assert.ok(Number(results.find(({ metric }) => metric === 'gap_count').value.value) > 0);
+  assert.equal(tableData.duplicates[0].count, '2');
+  assert.equal(tableData.head.length, 10);
+  assert.equal(tableData.plotRows.length, 128);
+  assert.equal(tableData.timeIndex.column, '订单编号');
   const exif = results.find(({ metric }) => metric === 'exif_tag_counts');
   assert.ok(exif.value.value.length > 0);
 });

@@ -59,8 +59,13 @@ export const additionalMetricIds = [
   'time_span',
 ];
 const supportedMetricIds = new Set([...metricIds, ...additionalMetricIds]);
-const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-const identifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+export const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
+export const identifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
+
+export function nanAsNull(column: ProfileColumn): string {
+  const name = identifier(column.name);
+  return /^(FLOAT|DOUBLE|REAL)$/i.test(column.type) ? `CASE WHEN isnan(${name}) THEN NULL ELSE ${name} END` : name;
+}
 
 export function kind(type: string): 'numeric' | 'string' | 'boolean' | 'date' | 'unknown' {
   if (
@@ -202,10 +207,7 @@ export function createProfilingPlan(
     })
   );
   const source = `query_table(${literal(tableName)})`;
-  const input = (field: ProfileColumn) =>
-    options.semantics === 'extended' && /^(FLOAT|DOUBLE|REAL)$/i.test(field.type)
-      ? `CASE WHEN isnan(${identifier(field.name)}) THEN NULL ELSE ${identifier(field.name)} END`
-      : identifier(field.name);
+  const input = (field: ProfileColumn) => options.semantics === 'extended' ? nanAsNull(field) : identifier(field.name);
   const aggregates = new Map<string, string>();
   const planned: PlannedMetric[] = [];
   const omitted: ProfileSkip[] = [];

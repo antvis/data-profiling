@@ -4,3 +4,5 @@ export type { MetricValue, ProfileResult, ProfileSkip, ProfileDiagnostics } from
 export { profile, ALL_METRICS } from './profile.js';
 export { BASIC_METRICS } from './metrics.js';
 export type { ProfileOptions, ProfilingConnection } from './profile.js';
+export { collectReportData } from './report-data.js';
+export type { ReportDataOptions, ReportRow, ReportTableData } from './report-data.js';

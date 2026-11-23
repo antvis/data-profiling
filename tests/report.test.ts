@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ALL_METRICS, profile, type MetricValue, type ProfileColumn, type ProfileResult } from 'data_profiling';
+import { ALL_METRICS, collectReportData, profile, type MetricValue, type ProfileColumn, type ProfileResult } from 'data_profiling';
 import { renderReport, type ReportOptions } from 'data_profiling/report';
 import { openFixture } from './fixture.js';
 
@@ -194,6 +194,65 @@ test('table insights use supplied statistics and rank distinct pairs by coeffici
   const missing = html.slice(html.indexOf('class="chart coverage"'), html.indexOf('Column counts'));
   assert.match(missing, /href="#table-0-column-1">photo<\/a>.*?width:40%/);
   assert.ok(missing.indexOf('photo') < missing.indexOf('size'));
+});
+
+test('row context drives the report, preserving exact cells and full-table missingness semantics', async (t) => {
+  const connection = await openFixture(t);
+  const escaped = '<img src=x onerror="alert(1)">';
+  await connection.run(`CREATE TABLE orders AS SELECT * FROM (VALUES
+    (DATE '2026-11-01', 'NaN'::DOUBLE, NULL::DECIMAL(24,2), '${escaped}'),
+    (DATE '2026-11-01', NULL, NULL, '${escaped}'),
+    (DATE '2026-11-02', 1, 9007199254740993.25, repeat('a', 250)),
+    (DATE '2026-11-10', 3, 9007199254740995.50, 'tail')
+  ) t("day", "c0", "value", "note")`);
+  const columns = (await connection.runAndReadAll("SELECT name,type FROM pragma_table_info('orders')")).getRowObjectsJson() as ProfileColumn[];
+  const data = await collectReportData(connection, 'orders', columns, { timeIndex: 'day', orderBy: ['day'] });
+  assert.equal(data.rowCount, 4);
+  assert.deepEqual(data.duplicates, [{ count: '2', values: ['2026-11-01', null, null, escaped] }]);
+  assert.equal(data.head[2].values[2], '9007199254740993.25');
+  assert.equal(data.head[2].values[3], 'a'.repeat(240) + '…');
+  assert.deepEqual(data.missingCorrelation.columns, ['c0', 'value']);
+  assert.ok(Math.abs(data.missingCorrelation.coefficients[0][1]! - 1) < 1e-10);
+  const dates = list({ type: 'date', value: '2026-11-02' }, { type: 'date', value: '2026-11-10' });
+  const results = [
+    row('row_count', integer('4')),
+    row('profiling_type', string('TimeSeries'), ['c0']),
+    row('gap_endpoints', list(dates), ['c0']),
+    row('profiling_type', string('Categorical'), ['note']),
+    row('distinct_count', integer('51'), ['note']),
+    row('category_imbalance_score', number(0.5), ['note']),
+    row('skewness', number(-1), ['c0']),
+    row('pearson_r', number(-0.9), ['c0', 'value']),
+  ];
+  const settings = { timeIndex: 'day', note: escaped };
+  const html = renderReport(results, { ...english, tableData: [data], run: {
+    generatedAt: '2026-11-23T12:00:00Z', libraryVersion: '0.5.0', durationMs: 20, configuration: settings,
+  } });
+  for (const title of ['First 4 rows', 'Most frequent duplicate groups', 'Missing locations', 'Missingness correlation',
+    'Interactions', 'Time series', 'Time gaps', 'Reproduction', 'High cardinality', 'Category imbalance',
+    'Skewed distribution', 'Strong association', '9007199254740993.25']) assert.ok(html.includes(title), title);
+  assert.match(html, /class="series-gap"[^>]*><title>2026-11-02 – 2026-11-10/);
+  assert.match(html, /class="series-line" d="M[^"]+ M/);
+  assert.match(html, /class="scatter-dot"[^>]*><title>Row 3/);
+  assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
+  assert.doesNotMatch(html, /<(?:script|link|img|iframe)\b|(?:src|href)="(?:https?:|\/\/)/i);
+  assert.match(renderReport(results, english), /class="chart time-gaps"/);
+  assert.throws(() => renderReport(results, { tableData: [{ ...data, head: [{ position: 1, values: [] }] }] }), /Invalid report rows/);
+});
+
+test('large tables bound plot previews while missingness correlations include unsampled rows', async (t) => {
+  const connection = await openFixture(t);
+  await connection.run(`CREATE TABLE wide_range AS SELECT
+    i p, CASE WHEN i=2 THEN NULL ELSE i END a, CASE WHEN i=2 THEN NULL ELSE -i END b
+    FROM range(1, 481) t(i)`);
+  const columns = (await connection.runAndReadAll("SELECT name,type FROM pragma_table_info('wide_range')")).getRowObjectsJson() as ProfileColumn[];
+  const data = await collectReportData(connection, 'wide_range', columns, { orderBy: ['p'] });
+  assert.equal(data.head.length, 10);
+  assert.equal(data.tail.at(-1)?.position, 480);
+  assert.ok(data.plotRows.length <= 240);
+  assert.equal(data.plotRows.at(-1)?.position, 480);
+  assert.ok(data.plotRows.every((row) => row.values.every((cell) => cell !== null)));
+  assert.ok(Math.abs(data.missingCorrelation.coefficients[0][1]! - 1) < 1e-10);
 });
 
 test('ACF and PACF show lag charts while retaining confidence intervals and null results', () => {

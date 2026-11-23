@@ -1,10 +1,21 @@
 import type { MetricValue, ProfileResult } from './types.js';
+import type { ReportRow, ReportTableData } from './report-data.js';
 import { chinese, type Translate } from './report-language.js';
+export type { ReportRow, ReportTableData } from './report-data.js';
 
 export interface ReportOptions {
   title?: string;
   theme?: 'light' | 'dark' | 'auto';
   language?: 'zh-CN' | 'en-US';
+  tableData?: readonly ReportTableData[];
+  run?: ReportRun;
+}
+
+export interface ReportRun {
+  generatedAt: string;
+  libraryVersion: string;
+  durationMs?: number;
+  configuration?: Record<string, unknown>;
 }
 
 const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -73,6 +84,46 @@ function validateResult(row: unknown): asserts row is ProfileResult {
       !Array.isArray(row.columns) || row.columns.length > 2 || !row.columns.every((name) => typeof name === 'string') ||
       typeof row.metric !== 'string' || !isRecord(row.parameters)) throw new TypeError('Invalid protocol-v1 ProfileResult');
   validateValue(row.value);
+}
+
+function indexTableData(input: unknown): Map<string, ReportTableData> {
+  if (!Array.isArray(input)) throw new TypeError('Invalid report table data');
+  const result = new Map<string, ReportTableData>();
+  for (const data of input as readonly ReportTableData[]) {
+    if (!data || typeof data.tableName !== 'string' || !data.tableName || result.has(data.tableName) ||
+        !Array.isArray(data.columns) || !data.columns.every((name) => typeof name === 'string') ||
+        new Set(data.columns).size !== data.columns.length || !Number.isSafeInteger(data.rowCount) || data.rowCount < 0 ||
+        !Array.isArray(data.numericColumns) || !data.numericColumns.every((name) => data.columns.includes(name))) {
+      throw new TypeError('Invalid report table data');
+    }
+    const cells = (values: unknown): boolean => Array.isArray(values) && values.length === data.columns.length &&
+      values.every((value) => value === null || typeof value === 'string');
+    for (const rows of [data.head, data.tail, data.plotRows]) {
+      if (!Array.isArray(rows) || !rows.every((row: ReportRow) => row && Number.isSafeInteger(row.position) &&
+          row.position >= 1 && row.position <= data.rowCount && cells(row.values))) throw new TypeError('Invalid report rows');
+    }
+    if (!Array.isArray(data.duplicates) || !data.duplicates.every((row) => row && typeof row.count === 'string' &&
+        /^\d+$/.test(row.count) && cells(row.values))) throw new TypeError('Invalid report duplicate groups');
+    const heatmap = data.missingCorrelation;
+    if (!heatmap || !Array.isArray(heatmap.columns) || !heatmap.columns.every((name) => data.columns.includes(name)) ||
+        !Number.isSafeInteger(heatmap.columnCount) || heatmap.columnCount < heatmap.columns.length ||
+        !Array.isArray(heatmap.coefficients) || heatmap.coefficients.length !== heatmap.columns.length ||
+        !heatmap.coefficients.every((row) => Array.isArray(row) && row.length === heatmap.columns.length &&
+          row.every((value) => value === null || (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1)))) {
+      throw new TypeError('Invalid report missingness correlations');
+    }
+    if (data.timeIndex !== undefined && (!data.timeIndex || !data.columns.includes(data.timeIndex.column) ||
+        !['numeric', 'date'].includes(data.timeIndex.kind))) throw new TypeError('Invalid report time index');
+    result.set(data.tableName, data);
+  }
+  return result;
+}
+
+function validateRun(run: unknown): asserts run is ReportRun {
+  if (!isRecord(run) || typeof run.generatedAt !== 'string' || !Number.isFinite(Date.parse(run.generatedAt)) ||
+      typeof run.libraryVersion !== 'string' || !run.libraryVersion ||
+      (run.durationMs !== undefined && (typeof run.durationMs !== 'number' || !Number.isFinite(run.durationMs) || run.durationMs < 0)) ||
+      (run.configuration !== undefined && !isRecord(run.configuration))) throw new TypeError('Invalid report run');
 }
 
 function text(value: MetricValue, t: Translate): string {
@@ -181,6 +232,7 @@ function imageSizePlot(items: (FrequencyItem & { value: MetricValue })[], t: Tra
 
 function chart(row: ProfileResult, t: Translate, role?: string): string {
   const value = row.value;
+  if (row.metric === 'gap_endpoints') return gapChart(value, t);
   if (row.metric.endsWith('_histogram') && value.type === 'object') {
     const counts = value.value.counts, edges = value.value.edges;
     if (counts?.type !== 'list' || edges?.type !== 'list') return '';
@@ -301,7 +353,7 @@ function duplicateSizes(value: MetricValue | undefined, t: Translate): string {
 }
 
 function observations(columns: Map<string, ProfileResult[]>, duplicates: MetricValue | undefined,
-    columnLink: (name: string) => string, t: Translate): string {
+    pairs: readonly RankedPair[], columnLink: (name: string) => string, t: Translate): string {
   const rows: string[][] = [];
   if ((numeric(duplicates) ?? 0) > 0) rows.push([t('Whole table'), label('duplicate_group_count', t), markup(duplicates, t)]);
   for (const [name, metrics] of columns) {
@@ -315,8 +367,22 @@ function observations(columns: Map<string, ProfileResult[]>, duplicates: MetricV
       if ((numeric(value) ?? 0) > 0) rows.push([link, t(description), markup(value, t)]);
     }
     if (numeric(values.get('distinct_count')) === 1) rows.push([link, t('One distinct non-missing value'), markup(values.get('distinct_count'), t)]);
+    const type = values.get('profiling_type');
+    if (type?.type === 'string' && ['Categorical', 'Text'].includes(type.value) && (numeric(values.get('distinct_count')) ?? 0) > 50) {
+      rows.push([link, t('High cardinality (>50 distinct values)'), markup(values.get('distinct_count'), t)]);
+    }
+    const skew = numeric(values.get('skewness'));
+    if (skew !== undefined && Math.abs(skew) >= 1) rows.push([link, t('Skewed distribution (absolute skewness ≥1)'), shortNumber.format(skew)]);
+    const imbalance = numeric(values.get('category_imbalance_score'));
+    if (imbalance !== undefined && imbalance >= 0.5) rows.push([link, t('Category imbalance (score ≥0.5)'), shortNumber.format(imbalance)]);
   }
-  return rows.length ? table([t('Target'), t('Observation'), t('Count')], rows) : `<p class="muted">${t('No quality observations available from the supplied metrics.')}</p>`;
+  for (const { row, amount } of pairs.slice(0, 8)) {
+    if (Math.abs(amount) < 0.9) break;
+    rows.push([row.columns.map(columnLink).join(' × '),
+      `${t('Strong association (absolute coefficient ≥0.9)')} · ${escape(label(row.metric, t))}`,
+      coefficient(row.value, amount, t)]);
+  }
+  return rows.length ? table([t('Target'), t('Observation'), t('Value')], rows) : `<p class="muted">${t('No quality observations available from the supplied metrics.')}</p>`;
 }
 
 function missingValues(columns: Map<string, ProfileResult[]>, rowCount: MetricValue | undefined,
@@ -342,20 +408,28 @@ function coefficient(value: MetricValue, amount: number, t: Translate): string {
   return `<span class="coefficient${amount < 0 ? ' negative' : ''}" style="--strength:${Math.min(1, Math.abs(amount))}" title="${escape(text(value, t))}">${shortNumber.format(amount)}</span>`;
 }
 
-function pairwise(rows: ProfileResult[], prefix: string, columnLink: (name: string) => string, t: Translate): string {
-  if (!rows.length) return `<p class="muted">${t('Pairwise metrics were not supplied.')}</p>`;
-  const methods = new Map<string, ProfileResult[]>();
-  const pairs = new Map<string, { row: ProfileResult; amount: number }>();
+interface RankedPair { row: ProfileResult; amount: number }
+
+function rankPairs(rows: readonly ProfileResult[]): RankedPair[] {
+  const pairs = new Map<string, RankedPair>();
   for (const row of rows) {
-    if (!methods.has(row.metric)) methods.set(row.metric, []);
-    methods.get(row.metric)!.push(row);
     const amount = numeric(row.value);
     if (!correlations.has(row.metric) || row.columns[0] === row.columns[1] || amount === undefined) continue;
     const key = JSON.stringify([...row.columns].sort());
     const previous = pairs.get(key);
     if (!previous || Math.abs(amount) > Math.abs(previous.amount)) pairs.set(key, { row, amount });
   }
-  const strongest = [...pairs.values()].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)).slice(0, 8);
+  return [...pairs.values()].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+}
+
+function pairwise(rows: ProfileResult[], ranked: readonly RankedPair[], prefix: string, columnLink: (name: string) => string, t: Translate): string {
+  if (!rows.length) return `<p class="muted">${t('Pairwise metrics were not supplied.')}</p>`;
+  const methods = new Map<string, ProfileResult[]>();
+  for (const row of rows) {
+    if (!methods.has(row.metric)) methods.set(row.metric, []);
+    methods.get(row.metric)!.push(row);
+  }
+  const strongest = ranked.slice(0, 8);
   const ranking = strongest.length ? `<div class="strongest-pairs"><h4>${t('Strongest pairs')}</h4>${table([t('Column pair'), t('Method'), t('Value')], strongest.map(({ row, amount }) => [
     row.columns.map(columnLink).join(' × '), escape(label(row.metric, t)), coefficient(row.value, amount, t),
   ]))}<p class="chart-note">${t('Each pair shows its highest absolute coefficient among the reported methods.')}</p></div>` : '';
@@ -379,6 +453,218 @@ function pairwise(rows: ProfileResult[], prefix: string, columnLink: (name: stri
       <figure class="chart matrix" aria-label="${name}">${matrix}<details class="raw" id="${prefix}-correlation-${index}-exact"><summary>${t('Exact pairwise values')}</summary>${table([t('Column pair'), t('Value'), t('Parameters')], metrics.map((row) => [escape(row.columns.join(' / ')), markup(row.value, t), parametersMarkup(row.parameters, t)]))}</details></figure></details>`;
   }).join('');
   return `${ranking}<div class="correlation-methods">${matrices}</div>`;
+}
+
+function previewCells(values: readonly (string | null)[], t: Translate): string[] {
+  return values.map((value) => value === null ? `<span class="muted">${t('Missing cell')}</span>` :
+    `<span class="value">${escape(value || t('(empty string)'))}</span>`);
+}
+
+function rowSamples(data: ReportTableData, prefix: string, t: Translate): string {
+  if (!data.head.length) return `<p class="muted">${t('No rows to preview.')}</p>`;
+  const headers = [t('Row'), ...data.columns];
+  const rows = (sample: readonly ReportRow[]) => table(headers, sample.map(({ position, values }) =>
+    [String(position), ...previewCells(values, t)]));
+  return `<details class="sample-rows" id="${prefix}-sample-head" open><summary>${t('First {count} rows').replace('{count}', String(data.head.length))}</summary>${rows(data.head)}</details>
+    ${data.tail.length ? `<details class="sample-rows" id="${prefix}-sample-tail"><summary>${t('Last {count} rows').replace('{count}', String(data.tail.length))}</summary>${rows(data.tail)}</details>` : ''}
+    <p class="chart-note">${t('Long cell values are shortened to 240 characters.')}</p>`;
+}
+
+function duplicateRows(data: ReportTableData, t: Translate): string {
+  if (!data.duplicates.length) return `<p class="muted">${t('No duplicate rows.')}</p>`;
+  return `<h4>${t('Most frequent duplicate groups')}</h4>
+    ${table([t('Occurrences'), ...data.columns], data.duplicates.map(({ count, values }) => [escape(count), ...previewCells(values, t)]))}
+    <p class="chart-note">${t('Up to 10 groups, ordered by occurrence count. Long cell values are shortened to 240 characters.')}</p>`;
+}
+
+function plottedRows(data: ReportTableData, t: Translate): string {
+  if (data.plotRows.length === data.rowCount) return t('Plot sample includes all {count} rows.').replace('{count}', String(data.rowCount));
+  return t('{shown} of {count} rows plotted.').replace('{shown}', String(data.plotRows.length)).replace('{count}', String(data.rowCount));
+}
+
+function missingPatterns(data: ReportTableData, t: Translate): string {
+  if (!data.plotRows.length || !data.columns.length) return '';
+  const marks = data.plotRows.map(({ position, values }, i) => {
+    const path = values.flatMap((value, col) => value === null ? [`M${col} ${i}h1v1h-1z`] : []).join('');
+    return `<g><title>${t('Row')} ${position}</title><rect width="${data.columns.length}" height="1" y="${i}" fill="transparent"/><path d="${path}"/></g>`;
+  }).join('');
+  const names = data.columns.map((column) => `<span title="${escape(column)}">${escape(column)}</span>`).join('');
+  const mask = `<figure class="chart missing-pattern"><figcaption>${t('Missing locations')}</figcaption>
+    <div class="mask-scroll" tabindex="0" aria-label="${t('Missing locations')}">
+      <div class="mask-grid" style="--mask-columns:${data.columns.length}"><div class="mask-names">${names}</div>
+        <svg class="mask-rows" viewBox="0 0 ${data.columns.length} ${data.plotRows.length}" preserveAspectRatio="none" role="img" aria-label="${t('Missing cells by row and column')}">${marks}</svg>
+      </div>
+    </div>
+    <p class="chart-note">${plottedRows(data, t)} <span class="missing-key">${t('Missing cell')}</span></p></figure>`;
+  const heatmap = data.missingCorrelation;
+  const values = heatmap.columns.length < 2 ? `<p class="muted">${t('At least two columns must contain both present and missing values.')}</p>` :
+    `${table([t('Column'), ...heatmap.columns], heatmap.columns.map((name, i) => [
+      escape(name), ...heatmap.coefficients[i].map((value) => value === null ? markup({ type: 'null', value }, t) : coefficient({ type: 'number', value }, value, t)),
+    ]))}
+    <p class="chart-note">${t('Calculated from all rows. Positive values indicate that columns tend to be missing together.')}</p>
+    ${heatmap.columnCount > heatmap.columns.length ? `<p class="chart-note">${t('Showing {shown} of {count} columns with both present and missing values.').replace('{shown}', String(heatmap.columns.length)).replace('{count}', String(heatmap.columnCount))}</p>` : ''}`;
+  return `${mask}<figure class="chart missing-correlation"><figcaption>${t('Missingness correlation')}</figcaption>${values}</figure>`;
+}
+
+interface PlotPoint { x: number; xLabel: string; y?: number; yLabel?: string; position?: number }
+interface PlotGap { from: number; to: number; fromLabel: string; toLabel: string }
+
+function coordinate(value: string | null | undefined, temporal = false): number | undefined {
+  if (!value?.trim()) return undefined;
+  if (!temporal) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+  const date = value.trim();
+  if (/^[+-]?\d+$/.test(date)) return undefined;
+  const iso = /^\d{4}-\d{2}-\d{2}/.test(date);
+  let utc = iso ? date.replace(' ', 'T') : `${date} UTC`;
+  if (iso && utc.includes('T') && !/Z$|[+-]\d{2}:\d{2}$/.test(utc)) utc += /[+-]\d{2}$/.test(utc) ? ':00' : 'Z';
+  const parsed = Date.parse(utc);
+  const number = Number.isFinite(parsed) ? parsed : Date.parse(date);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function axisRatio(value: number, min: number, max: number): number {
+  if (min === max) return 0.5;
+  const scale = Math.max(Math.abs(min), Math.abs(max), Number.MIN_VALUE);
+  const fraction = (value / scale - min / scale) / (max / scale - min / scale);
+  return Math.min(1, Math.max(0, fraction));
+}
+
+function gapsFor(value: MetricValue | undefined, t: Translate): PlotGap[] {
+  if (value?.type !== 'list') return [];
+  return value.value.flatMap((pair) => {
+    if (pair.type !== 'list' || pair.value.length !== 2) return [];
+    const [a, b] = pair.value;
+    const from = numeric(a) ?? coordinate(text(a, t), true);
+    const to = numeric(b) ?? coordinate(text(b, t), true);
+    if (from === undefined || to === undefined || from === to) return [];
+    return from < to
+      ? [{ from, to, fromLabel: text(a, t), toLabel: text(b, t) }]
+      : [{ from: to, to: from, fromLabel: text(b, t), toLabel: text(a, t) }];
+  }).sort((a, b) => a.from - b.from);
+}
+
+function gapChart(value: MetricValue, t: Translate): string {
+  const gaps = gapsFor(value, t);
+  if (!gaps.length) return '';
+  const first = gaps[0], last = gaps.reduce((end, gap) => gap.to > end.to ? gap : end);
+  const bands = gaps.map((gap) => {
+    const x = axisRatio(gap.from, first.from, last.to) * 620;
+    const end = axisRatio(gap.to, first.from, last.to) * 620;
+    return `<rect class="series-gap" x="${10 + x}" width="${Math.max(1, end - x)}" y="6" height="22"><title>${escape(`${gap.fromLabel} – ${gap.toLabel}`)}</title></rect>`;
+  }).join('');
+  return `<figure class="chart time-gaps"><figcaption>${t('Time gaps')}</figcaption>
+    <svg viewBox="0 0 640 34" preserveAspectRatio="none" role="img" aria-label="${t('Time gaps')}"><path class="plot-grid" d="M10 28H630"/>${bands}</svg>
+    <div class="axis"><span>${escape(first.fromLabel)}</span><span>${escape(last.toLabel)}</span></div></figure>`;
+}
+
+function xyChart(points: readonly PlotPoint[], xName: string, yName: string, t: Translate, gaps?: readonly PlotGap[]): string {
+  const measured = points.filter((point) => point.y !== undefined);
+  if (!measured.length) return '';
+  const lowY = measured.reduce((low, point) => point.y! < low.y! ? point : low);
+  const highY = measured.reduce((high, point) => point.y! > high.y! ? point : high);
+  const lowX = points.reduce((low, point) => point.x < low.x ? point : low);
+  const highX = points.reduce((high, point) => point.x > high.x ? point : high);
+  const x = (value: number) => (10 + axisRatio(value, lowX.x, highX.x) * 620).toFixed(2);
+  const y = (value: number) => (175 - axisRatio(value, lowY.y!, highY.y!) * 165).toFixed(2);
+  const grid = '<path class="plot-grid" d="M10 10V175H630M10 51H630M10 92H630M10 133H630"/>';
+  let drawings = '';
+  if (gaps) {
+    const shading = gaps.flatMap((gap) => {
+      if (gap.to < lowX.x || gap.from > highX.x) return [];
+      const begin = x(gap.from), end = x(gap.to);
+      return [`<rect class="series-gap" x="${begin}" y="10" width="${Math.max(1, Number(end) - Number(begin))}" height="165"><title>${escape(`${gap.fromLabel} – ${gap.toLabel}`)}</title></rect>`];
+    }).join('');
+    let previous: PlotPoint | undefined;
+    let gapIndex = 0;
+    const path: string[] = [];
+    for (const point of points) {
+      if (point.y === undefined) { previous = undefined; continue; }
+      while (previous && gapIndex < gaps.length && gaps[gapIndex].to <= previous.x) gapIndex++;
+      const gap = gaps[gapIndex];
+      const connects = previous && !(gap && gap.from >= previous.x && gap.to <= point.x);
+      path.push(`${connects ? 'L' : 'M'}${x(point.x)} ${y(point.y)}`);
+      previous = point;
+    }
+    drawings = `${shading}<path class="series-line" d="${path.join(' ')}"/>`;
+    if (measured.length === 1) drawings += `<circle class="scatter-dot" cx="${x(measured[0].x)}" cy="${y(measured[0].y!)}" r="3.5"/>`;
+  } else {
+    drawings = measured.map((point) => `<circle class="scatter-dot" cx="${x(point.x)}" cy="${y(point.y!)}" r="3.5"><title>${escape(`${t('Row')} ${point.position} · ${xName} ${point.xLabel} · ${yName} ${point.yLabel}`)}</title></circle>`).join('');
+  }
+  const caption = gaps ? yName : `${xName} × ${yName}`;
+  return `<figure class="chart ${gaps ? 'series-chart' : 'scatter-chart'}">
+    <div class="plot-axis-name">${escape(yName)}</div>
+    <div class="plot-layout">
+      <div class="scale"><span title="${escape(highY.yLabel!)}">${shortNumber.format(highY.y!)}</span><span title="${escape(lowY.yLabel!)}">${shortNumber.format(lowY.y!)}</span></div>
+      <svg class="xy-plot" viewBox="0 0 640 185" preserveAspectRatio="none" role="img" aria-label="${escape(caption)}">${grid}${drawings}</svg>
+      <div class="axis plot-range"><span>${escape(lowX.xLabel)}</span><span>${escape(highX.xLabel)}</span></div>
+      <div class="plot-axis-name plot-x-name">${escape(xName)}</div>
+    </div>
+    ${gaps?.length ? `<p class="chart-note"><span class="missing-key">${t('Time gaps')}</span></p>` : ''}</figure>`;
+}
+
+function interactions(data: ReportTableData, ranked: readonly RankedPair[], prefix: string, t: Translate): string {
+  const numeric = new Set(data.numericColumns);
+  const indices = new Map(data.columns.map((name, i) => [name, i]));
+  const seen = new Set<string>();
+  const charts: { caption: string; chart: string }[] = [];
+  const plot = (a: string, b: string) => {
+    const key = JSON.stringify([a, b].sort());
+    if (seen.has(key)) return;
+    seen.add(key);
+    const i = indices.get(a)!, j = indices.get(b)!;
+    const points = data.plotRows.flatMap(({ position, values }) => {
+      const x = coordinate(values[i]), y = coordinate(values[j]);
+      return x === undefined || y === undefined ? [] : [{ x, y, xLabel: values[i]!, yLabel: values[j]!, position }];
+    });
+    const chart = xyChart(points, a, b, t);
+    if (chart) charts.push({ caption: `${a} × ${b}`, chart });
+  };
+  for (const { row } of ranked) {
+    if (charts.length >= 12) break;
+    if (row.columns.every((name) => numeric.has(name))) plot(row.columns[0], row.columns[1]);
+  }
+  for (let i = 0; i < data.numericColumns.length && charts.length < 12; i++) {
+    for (let j = i + 1; j < data.numericColumns.length && charts.length < 12; j++) plot(data.numericColumns[i], data.numericColumns[j]);
+  }
+  if (!charts.length) return '';
+  return `<p class="section-note">${plottedRows(data, t)} ${t('Only rows with two finite values appear in each plot.')}</p>
+    ${charts.map(({ caption, chart }, i) => `<details class="row-plot" id="${prefix}-interaction-${i}" name="${prefix}-interactions"${i === 0 ? ' open' : ''}><summary>${escape(caption)}</summary>${chart}</details>`).join('')}
+    ${charts.length === 12 ? `<p class="chart-note">${t('Up to 12 pairs are shown, prioritizing stronger correlations.')}</p>` : ''}`;
+}
+
+function timeSeries(data: ReportTableData, columns: Map<string, ProfileResult[]>, prefix: string, t: Translate): string {
+  if (!data.timeIndex) return '';
+  const index = data.columns.indexOf(data.timeIndex.column);
+  const candidates = data.numericColumns.filter((name) => name !== data.timeIndex!.column);
+  const assigned = candidates.filter((name) => columns.get(name)?.some((row) => row.metric === 'profiling_type' && row.value.value === 'TimeSeries'));
+  const charts = (assigned.length ? assigned : candidates).flatMap((name, i) => {
+    const field = data.columns.indexOf(name);
+    const points = data.plotRows.flatMap(({ values }) => {
+      const x = coordinate(values[index], data.timeIndex!.kind === 'date');
+      const y = coordinate(values[field]);
+      return x === undefined ? [] : [{ x, y, xLabel: values[index]!, yLabel: values[field] ?? undefined }];
+    }).sort((a, b) => a.x - b.x);
+    const gaps = gapsFor(columns.get(name)?.find((row) => row.metric === 'gap_endpoints')?.value, t);
+    const chart = xyChart(points, data.timeIndex!.column, name, t, gaps);
+    return chart ? [{ name, chart, i }] : [];
+  });
+  if (!charts.length) return '';
+  return `<p class="section-note">${plottedRows(data, t)}</p>${charts.map(({ name, chart, i }, index) => `<details class="row-plot" id="${prefix}-series-${i}" name="${prefix}-series"${index === 0 ? ' open' : ''}><summary>${escape(name)}</summary>${chart}</details>`).join('')}`;
+}
+
+function reproduce(run: ReportRun, t: Translate): string {
+  const fields = [
+    [t('Generated at'), `<time datetime="${escape(run.generatedAt)}">${escape(run.generatedAt)}</time>`],
+    [t('Library version'), escape(run.libraryVersion)],
+  ];
+  if (run.durationMs !== undefined) fields.push([t('Duration'), `${shortNumber.format(run.durationMs)} ms`]);
+  const configuration = run.configuration && JSON.stringify(run.configuration, null, 2);
+  return `<section class="report-section reproduction" id="reproduction"><h2>${t('Reproduction')}</h2>
+    ${table([t('Field'), t('Value')], fields)}
+    ${configuration ? `<details class="raw" id="reproduction-config"><summary>${t('Profiling configuration')}</summary><pre>${escape(configuration)}</pre></details>` : ''}</section>`;
 }
 
 const darkTheme = 'color-scheme:dark;--paper:#181a1c;--ink:#efefef;--muted:#b1b4b8;--line:#3a3e43;--accent:#92b7f1;--alert:#f2a48e;--wash:#202225;--head:#2a2e33;--type-lightness:64%;';
@@ -425,6 +711,34 @@ dt{font-size:.74rem;color:var(--muted)}dd{margin:.25rem 0 0;font-size:1.65rem;li
 .correlation-method[open]>summary{margin-bottom:.6rem}
 .coefficient{display:block;min-width:4rem;padding:.2rem .35rem;border-radius:.2rem;font-variant-numeric:tabular-nums;background:color-mix(in srgb,var(--accent) calc(var(--strength)*34%),transparent)}
 .coefficient.negative{background:color-mix(in srgb,var(--alert) calc(var(--strength)*34%),transparent)}
+.sample-rows,.row-plot{border-top:1px solid var(--line);padding:.65rem 0}
+.sample-rows>summary,.row-plot>summary{font-weight:600}
+.sample-rows[open]>summary,.row-plot[open]>summary{margin-bottom:.65rem}
+.sample-rows .table-scroll th,.sample-rows .table-scroll td{max-width:17rem}
+.report-section h4{margin:1rem 0 .55rem;font-size:.88rem;font-weight:600}
+.report-section .strongest-pairs h4{margin-top:0}
+.missing-pattern,.missing-correlation{margin-top:1rem}
+.mask-scroll{overflow:auto;max-height:26rem;border:1px solid var(--line);border-radius:.45rem}
+.mask-grid{min-width:calc(var(--mask-columns)*3.9rem);background:var(--wash)}
+.mask-names{position:sticky;top:0;display:grid;grid-template-columns:repeat(var(--mask-columns),minmax(0,1fr));background:var(--head)}
+.mask-names span{padding:.35rem .45rem;border-right:1px solid var(--line);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.72rem}
+.mask-rows{display:block;width:100%;height:clamp(5rem,26vw,14rem);background:linear-gradient(to right,var(--line) 1px,transparent 1px);background-size:calc(100% / var(--mask-columns)) 100%}
+.mask-rows path{fill:var(--alert)}
+.missing-key{display:inline-flex;align-items:center;gap:.35rem;margin-inline-start:.45rem}
+.missing-key::before{content:"";width:.65rem;height:.65rem;border-radius:2px;background:var(--alert)}
+.plot-layout{display:grid;grid-template-columns:minmax(2rem,max-content) minmax(0,1fr);column-gap:.35rem}
+.plot-layout .scale>span{max-width:clamp(2rem,11vw,6rem);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.plot-axis-name{color:var(--muted);font-size:.72rem;overflow-wrap:anywhere}
+.plot-x-name,.plot-range{grid-column:2;padding-inline:1.5625%}
+.plot-x-name{text-align:right}
+.xy-plot{display:block;width:100%;height:clamp(8rem,18vw,12rem)}
+.time-gaps svg{display:block;width:100%;height:2.35rem}
+.plot-grid{fill:none;stroke:var(--line);vector-effect:non-scaling-stroke}
+.scatter-dot{fill:var(--accent);opacity:.62}
+.scatter-dot:hover{opacity:1}
+.series-line{fill:none;stroke:var(--accent);stroke-width:1.6;vector-effect:non-scaling-stroke}
+.series-gap{fill:var(--alert);opacity:.3}
+.reproduction pre{margin:0;padding:.8rem;border:1px solid var(--line);border-radius:.45rem;background:var(--wash);white-space:pre-wrap;overflow-wrap:anywhere}
 @media(min-width:52rem){
   .overview:has(>div:nth-child(5)){grid-template-columns:repeat(5,minmax(0,1fr))}
   .overview:has(>div:nth-child(6)){grid-template-columns:repeat(6,minmax(0,1fr))}
@@ -441,10 +755,13 @@ dt{font-size:.74rem;color:var(--muted)}dd{margin:.25rem 0 0;font-size:1.65rem;li
 /** Render protocol-v1 profiling results as a standalone, offline HTML document. */
 export function renderReport(results: readonly ProfileResult[], options: ReportOptions = {}): string {
   if (!Array.isArray(results)) throw new TypeError('results must be an array of ProfileResult');
-  if (!isRecord(options) || Object.keys(options).some((key) => !['title', 'theme', 'language'].includes(key)) ||
+  if (!isRecord(options) || Object.keys(options).some((key) => !['title', 'theme', 'language', 'tableData', 'run'].includes(key)) ||
       (options.title !== undefined && typeof options.title !== 'string') ||
       (options.theme !== undefined && (typeof options.theme !== 'string' || !['light', 'dark', 'auto'].includes(options.theme))) ||
       (options.language !== undefined && (typeof options.language !== 'string' || !['zh-CN', 'en-US'].includes(options.language)))) throw new TypeError('Invalid report options');
+  const run = options.run;
+  if (run !== undefined) validateRun(run);
+  const tableData = indexTableData(options.tableData === undefined ? [] : options.tableData);
   const language = options.language ?? 'zh-CN';
   const t: Translate = (value) => language === 'zh-CN' && Object.hasOwn(chinese, value) ? chinese[value as keyof typeof chinese] : value;
   const tables = new Map<string, ProfileResult[]>();
@@ -454,6 +771,9 @@ export function renderReport(results: readonly ProfileResult[], options: ReportO
     tables.get(row.table_name)!.push(row);
   }
   const sections = [...tables].map(([name, rows], index) => {
+    const data = tableData.get(name);
+    const pairs = rows.filter((row) => row.columns.length === 2);
+    const ranked = rankPairs(pairs);
     const tableRows = rows.filter((row) => !row.columns.length);
     const values = new Map(tableRows.map((row) => [row.metric, row.value]));
     const columns = new Map<string, ProfileResult[]>();
@@ -481,7 +801,9 @@ export function renderReport(results: readonly ProfileResult[], options: ReportO
     if (columnsWithMissing) overview.push(['Columns with missing values', markup(columnsWithMissing, t)]);
     const memory = values.get('table_memory_bytes');
     if (memory) overview.push(['Table memory (bytes)', markup(memory, t)]);
-    const duplicates = duplicateSizes(values.get('duplicate_group_row_count'), t);
+    const duplicates = duplicateSizes(values.get('duplicate_group_row_count'), t) + (data ? duplicateRows(data, t) : '');
+    const scatter = data ? interactions(data, ranked, prefix, t) : '';
+    const trends = data ? timeSeries(data, columns, prefix, t) : '';
     const variables = [...columns].map(([columnName, metrics], columnIndex) => {
       const anchor = `${prefix}-column-${columnIndex}`;
       const stats = new Map(metrics.map((row) => [row.metric, row.value]));
@@ -504,17 +826,27 @@ export function renderReport(results: readonly ProfileResult[], options: ReportO
         <details class="raw" id="${anchor}-exact"><summary>${t('All {count} column metrics · exact values and parameters').replace('{count}', String(metrics.length))}</summary>${metricTable(metrics, t)}</details>
       </details>`;
     }).join('');
-    const sectionIndex = ['Observations', 'Variables', 'Correlations', 'Missing values', 'Table details']
-      .map((heading, i) => `<a href="#${prefix}-section-${i}">${t(heading)}</a>`);
-    if (duplicates) sectionIndex.splice(4, 0, `<a href="#${prefix}-duplicates">${t('Duplicate data')}</a>`);
+    const sectionIndex = [
+      ['Observations', `${prefix}-section-0`], ['Variables', `${prefix}-section-1`],
+      ...(scatter ? [['Interactions', `${prefix}-interactions`]] : []),
+      ['Correlations', `${prefix}-section-2`],
+      ...(trends ? [['Time series', `${prefix}-time-series`]] : []),
+      ['Missing values', `${prefix}-section-3`],
+      ...(data ? [['Sample rows', `${prefix}-samples`]] : []),
+      ...(duplicates ? [['Duplicate data', `${prefix}-duplicates`]] : []),
+      ['Table details', `${prefix}-section-4`], ...(run ? [['Reproduction', 'reproduction']] : []),
+    ].map(([heading, id]) => `<a href="#${id}">${t(heading)}</a>`);
     return `<section id="${prefix}"><h2>${escape(name)}</h2>
 <dl class="overview">${overview.map(([key, value, note]) => `<div><dt>${t(key)}</dt><dd>${value}${note ? `<span class="overview-note">${note}</span>` : ''}</dd></div>`).join('')}</dl>
 ${typeDistribution(values.get('column_type_counts'), columns, t)}
 <nav class="index" aria-label="${escape(name)} ${t('report sections')}">${sectionIndex.join('')}</nav>
-<div class="report-section" id="${prefix}-section-0"><h3>${t('Data quality observations')}</h3>${observations(columns, values.get('duplicate_group_count'), columnLink, t)}</div>
+<div class="report-section" id="${prefix}-section-0"><h3>${t('Data quality observations')}</h3>${observations(columns, values.get('duplicate_group_count'), ranked, columnLink, t)}</div>
 <div class="report-section" id="${prefix}-section-1"><h3>${t('Variables')} <span class="muted">· ${columns.size} ${t('profiled')}</span></h3>${columns.size ? `<nav aria-label="${escape(name)} ${t('columns')}">${[...columns.keys()].map((key, i) => `<a href="#${prefix}-column-${i}">${escape(key)}</a>`).join('')}</nav>${variables}` : `<p class="muted">${t('Single-column metrics were not supplied.')}</p>`}</div>
-<div class="report-section" id="${prefix}-section-2"><h3>${t('Correlations and pairwise metrics')}</h3>${pairwise(rows.filter((row) => row.columns.length === 2), prefix, columnLink, t)}</div>
-<div class="report-section" id="${prefix}-section-3"><h3>${t('Missing values')}</h3>${missingValues(columns, values.get('row_count'), columnLink, t)}</div>
+${scatter ? `<div class="report-section" id="${prefix}-interactions"><h3>${t('Interactions')}</h3>${scatter}</div>` : ''}
+<div class="report-section" id="${prefix}-section-2"><h3>${t('Correlations and pairwise metrics')}</h3>${pairwise(pairs, ranked, prefix, columnLink, t)}</div>
+${trends ? `<div class="report-section" id="${prefix}-time-series"><h3>${t('Time series')}</h3>${trends}</div>` : ''}
+<div class="report-section" id="${prefix}-section-3"><h3>${t('Missing values')}</h3>${missingValues(columns, values.get('row_count'), columnLink, t)}${data ? missingPatterns(data, t) : ''}</div>
+${data ? `<div class="report-section" id="${prefix}-samples"><h3>${t('Sample rows')}</h3>${rowSamples(data, prefix, t)}</div>` : ''}
 ${duplicates ? `<div class="report-section" id="${prefix}-duplicates"><h3>${t('Duplicate data')}</h3>${duplicates}</div>` : ''}
 <div class="report-section" id="${prefix}-section-4"><h3>${t('Table details')}</h3>${tableRows.length ? metricTable(tableRows, t) : `<p class="muted">${t('Table-level metrics were not supplied.')}</p>`}</div></section>`;
   }).join('');
@@ -525,7 +857,7 @@ ${duplicates ? `<div class="report-section" id="${prefix}-duplicates"><h3>${t('D
 <body><header>${title === t('Data profiling report') ? '' : `<div class="eyebrow">${t('Data profiling report')}</div>`}<h1>${escape(title)}</h1>
 <p class="subtitle">${tables.size} ${t(tables.size === 1 ? 'table' : 'tables')} · ${new Set(results.map((row) => row.metric)).size} ${t('metric IDs')} · ${results.length} ${t('result records')} · ${t('Protocol v1')}</p>
 ${tables.size > 1 ? `<nav aria-label="${t('Tables')}">${[...tables.keys()].map((name, i) => `<a href="#table-${i}">${escape(name)}</a>`).join('')}</nav>` : ''}
-</header><main>${sections || `<p class="muted">${t('No profiling results were supplied.')}</p>`}</main>
+</header><main>${sections || `<p class="muted">${t('No profiling results were supplied.')}</p>`}${run ? reproduce(run, t) : ''}</main>
 <footer>${t('Rendered from supplied profiling results. “Not supplied” indicates an absent metric; “Undefined” indicates a computed null.')}
 ${t('Chart geometry uses approximate numbers; exact values and parameters are available in the detail tables.')}</footer>
 </body></html>`;

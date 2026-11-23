@@ -7,6 +7,7 @@ import type { Socket } from 'node:net';
 import {
   createProfilingPlan,
   kind,
+  nanAsNull,
   scalar,
   type MetricConfig,
   type ProfileColumn,
@@ -344,11 +345,7 @@ export async function profile(
     requested.has(metric)
   );
   if (duplicates.length) {
-    const fields = columns.map((column) =>
-      /^(FLOAT|DOUBLE|REAL)$/i.test(column.type)
-        ? `CASE WHEN isnan(${q(column.name)}) THEN NULL ELSE ${q(column.name)} END`
-        : q(column.name)
-    );
+    const fields = columns.map(nanAsNull);
     const group = fields.length
       ? `SELECT count(*) AS n FROM ${source} GROUP BY ${fields.join(', ')} HAVING count(*) > 1`
       : 'SELECT 0 AS n WHERE false';
