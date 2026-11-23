@@ -241,22 +241,22 @@ function render() {
   const language = languageInput.value as ReportOptions['language'];
   const theme = themeInput.value as ReportOptions['theme'];
   const previous = currentReport ? report.contentDocument : null;
-  const expanded = [...(previous?.querySelectorAll<HTMLDetailsElement>('details[id][open]') ?? [])].map((detail) => detail.id);
+  const disclosures = [...(previous?.querySelectorAll<HTMLDetailsElement>('details[id]') ?? [])]
+    .map((detail) => ({ id: detail.id, open: detail.open }));
   const scroll = previous?.scrollingElement?.scrollTop ?? 0;
   currentReport = renderReport(results, { language, theme, title: language === 'en-US' ? 'Data profile' : '数据画像报告' });
   report.onload = () => {
-    for (const id of expanded) {
+    for (const { id, open } of disclosures) {
       const detail = report.contentDocument?.getElementById(id) as HTMLDetailsElement | null;
-      if (detail) detail.open = true;
+      if (detail) detail.open = open;
     }
     report.contentWindow?.scrollTo(0, scroll);
   };
   report.srcdoc = currentReport.replace('<head>', '<head><base href="about:srcdoc">');
   report.hidden = false;
   loading.hidden = true;
-  reportState.textContent = fullResults
-    ? `${new Set(results.map((row) => row.metric)).size} / ${ALL_METRICS.length} 种指标`
-    : `${results.length} 项指标`;
+  const metricCount = new Set(results.map((row) => row.metric)).size;
+  reportState.textContent = fullResults ? `${metricCount} / ${ALL_METRICS.length} 种指标` : `${metricCount} 种指标`;
   reportState.classList.add('ready');
   download.disabled = busy;
 }

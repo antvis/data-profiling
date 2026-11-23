@@ -83,9 +83,11 @@ const html = renderReport(results, {
 await writeFile('orders-report.html', html, 'utf8');
 ```
 
-`renderReport` is synchronous and accepts `readonly ProfileResult[]`. It renders table overviews, factual quality observations, expandable column details, distributions and frequencies, pairwise matrices, missing-value coverage, and ACF/PACF when supplied. All exact values and metric parameters remain available in detail tables. Missing metrics are marked “Not supplied”; computed nulls are marked “Undefined”. Chart geometry uses approximate numbers while detail tables preserve the original integer, decimal and temporal strings. Frequency charts preview up to 12 supplied entries; the full supplied data remains in the tables.
+`renderReport` is synchronous and accepts `readonly ProfileResult[]`. The report counts distinct metric IDs and result records separately. It shows column types, quality observations linked to column details, missing rates by column, and repeated group sizes when available. Column details prioritize charts by role, including text word clouds, image dimensions, and ACF/PACF for time series. The correlation overview ranks the strongest column pairs and lets readers expand each method's matrix.
 
-The renderer does not query data, load files, or require Python or DuckDB. It supports multiple tables and validates protocol-v1 inputs. HTML escaping protects table names, column names, values and options. Reports work offline with native expand/collapse controls. Samples, scatter plots and missingness matrices require additional data not present in the current result protocol.
+Detail tables preserve all supplied values and metric parameters, including original integer, decimal and temporal strings. “Not supplied” marks an absent metric and “Undefined” marks a computed null. Chart previews show approximate geometry and may limit the number of displayed values.
+
+The renderer supports multiple tables, validates protocol-v1 inputs and escapes table names, column names, values and options. It produces offline HTML with native expand/collapse controls using only the supplied results. Samples, row-level scatterplots and missingness matrices require row-level data beyond the current result protocol.
 
 Reports default to Simplified Chinese. `language` controls headings, metric and parameter labels, type names, chart text and empty states; the HTML `lang` attribute follows it. Table names, column names, data values and custom titles stay unchanged. Machine metric IDs remain in tooltips; unknown metric IDs retain their readable names.
 

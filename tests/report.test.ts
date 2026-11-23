@@ -142,6 +142,60 @@ test('frequency previews stay bounded and complete supplied data stays accessibl
   assert.doesNotMatch(huge, /No observations to plot/);
 });
 
+test('text columns prioritize a bounded word cloud and preserve the full word counts', () => {
+  const word = (value: string, count: number) => object({ value: string(value), count: number(count) });
+  const words = Array.from({ length: 25 }, (_, i) => word(`term-${i}`, i + 1));
+  const html = renderReport([
+    row('profiling_type', string('Text'), ['notes']),
+    row('value_counts', list(word('refund requested', 17)), ['notes']),
+    row('word_counts', list(...words, word('<script>', 30), word('', 30)), ['notes']),
+    row('length_histogram', object({ counts: list(number(17)), edges: list(number(0), number(16)) }), ['notes']),
+    row('profiling_type', string('Categorical'), ['category']),
+    row('word_counts', list(word('retail', 20)), ['category']),
+  ], english);
+  const cloud = html.match(/<figure class="chart word-cloud">[\s\S]*?<\/figure>/)?.[0] ?? '';
+  assert.equal((html.match(/class="chart word-cloud"/g) ?? []).length, 1);
+  assert.equal((cloud.match(/--word-size:/g) ?? []).length, 24);
+  assert.match(cloud, /title="&lt;script&gt; · 30"/);
+  assert.match(cloud, /24 of 26 words/);
+  assert.doesNotMatch(cloud, /term-0|<script>/);
+  assert.match(html, /term-0/);
+  assert.match(html, /More charts \(1\)/);
+  assert.ok(html.indexOf(cloud) < html.indexOf('Length histogram'));
+});
+
+test('table insights use supplied statistics and rank distinct pairs by coefficient strength', () => {
+  const html = renderReport([
+    row('row_count', integer('10')),
+    row('missing_cell_count', integer('5')),
+    row('missing_cell_rate', number(0.25)),
+    row('column_type_counts', object({ Image: integer('1'), Numeric: integer('1') })),
+    row('duplicate_group_count', integer('3')),
+    row('duplicate_group_row_count', list(integer('3'), integer('2'), integer('2'))),
+    row('missing_count', integer('1'), ['size']),
+    row('missing_count', integer('4'), ['photo']),
+    row('image_dimension_counts', list(object({ value: list(integer('200'), integer('100')), count: integer('6') })), ['photo']),
+    row('pearson_r', number(0.45), ['size', 'photo']),
+    row('spearman_rho', number(-0.97), ['photo', 'size']),
+    row('auto_correlation', number(0.62), ['size', 'other']),
+    row('custom_pair_score', number(1), ['photo', 'other']),
+  ], english);
+  assert.match(html, /12 metric IDs · 13 result records/);
+  assert.match(html, /class="overview-note">25%/);
+  assert.match(html, /class="type-track"[^>]*><span[^>]*><\/span><span/);
+  assert.match(html, /class="size-dot"[^>]*title="200 × 100 · 6"/);
+  assert.match(html, /<h3>Duplicate data<\/h3>[\s\S]*?<li>\s*<span[^>]*>2 rows<\/span>\s*<span[^>]*title="2"/);
+  const ranking = html.slice(html.indexOf('class="strongest-pairs"'), html.indexOf('class="correlation-methods"'));
+  assert.equal((ranking.match(/--strength:/g) ?? []).length, 2);
+  assert.ok(ranking.indexOf('title="-0.97"') < ranking.indexOf('title="0.62"'));
+  assert.doesNotMatch(ranking, /0\.45|Custom pair score/);
+  assert.match(html, /name="table-0-correlation" open><summary title="auto_correlation">Auto correlation<\/summary>/);
+  assert.match(html, /<summary title="custom_pair_score">Custom pair score<\/summary>[\s\S]*?photo \/ other/);
+  const missing = html.slice(html.indexOf('class="chart coverage"'), html.indexOf('Column counts'));
+  assert.match(missing, /href="#table-0-column-1">photo<\/a>.*?width:40%/);
+  assert.ok(missing.indexOf('photo') < missing.indexOf('size'));
+});
+
 test('ACF and PACF show lag charts while retaining confidence intervals and null results', () => {
   const coefficients = list(object({ lag: integer('0'), coefficient: number(1), confidence_interval: list(number(0.9), number(1.1)) }),
     object({ lag: integer('1'), coefficient: number(-0.4), confidence_interval: list(number(-0.5), number(-0.3)) }));
