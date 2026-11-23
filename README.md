@@ -2,7 +2,7 @@
 
 # Data Profiling
 
-[Live playground](https://antv.vision/data-profiling/)
+[Live playground](https://data-profiling.antv.vision/)
 
 The ES module data profiling foundation for AVA. Supply the caller's DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol. AVA owns data access, sessions and result consumption; business rules and interpretation stay with the application or agent.
 
@@ -121,7 +121,7 @@ The static playground in `site/` builds to `build/`, separately from the library
 
 DuckDB-Wasm computes data in the browser; uploaded data is not sent to a server. The pinned engine loads from a CDN on first use and needs a network connection. The playground reuses native plans and distributions without Python algorithms. Correlations cover the first 20 numeric columns. Each preview page shows 25 rows; statistics use the full dataset. Failed imports roll back and retain the current dataset.
 
-Pushes to `main` trigger [GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) to install dependencies, run tests, build and deploy to GitHub Pages. Manual runs are also supported. Assets use the repository name as their base path. Enable GitHub Actions as the publishing source in Settings → Pages; Pages requires a public repository on an organization Free plan.
+Pushes to `main` trigger [GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) to install dependencies, run tests, build and deploy to GitHub Pages. Manual runs are also supported. Assets use relative paths, including on the custom domain. Enable GitHub Actions as the publishing source in Settings → Pages; Pages requires a public repository on an organization Free plan.
 
 Node.js 22.13 or later:
 

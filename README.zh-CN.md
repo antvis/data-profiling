@@ -2,7 +2,7 @@
 
 # Data Profiling
 
-[在线体验](https://antv.vision/data-profiling/)
+[在线体验](https://data-profiling.antv.vision/)
 
 为 AVA 提供数据画像计算能力的 ES Modules 基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
 
@@ -121,7 +121,7 @@ npm run build:site
 
 数据在浏览器内由 DuckDB-Wasm 计算，不发送到服务器。计算引擎首次从固定版本的 CDN 载入，需要网络。体验页复用原生计划和分布计算，不运行 Python 专项算法；相关性计算覆盖前 20 个数值列。预览每页 25 行，统计使用完整数据。上传解析失败会回滚并保留当前数据。
 
-推送到 `main` 后，[GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) 自动安装依赖、运行测试、构建并部署到 GitHub Pages，也支持手动触发。构建使用仓库名称作为资源路径前缀。仓库的 Settings → Pages 需要启用 GitHub Actions 发布来源；组织 Free 套餐下，Pages 需要公开仓库。
+推送到 `main` 后，[GitHub Actions](https://github.com/antvis/data-profiling/actions/workflows/deploy-pages.yml) 自动安装依赖、运行测试、构建并部署到 GitHub Pages，也支持手动触发。资源使用相对路径，支持自定义域名。仓库的 Settings → Pages 需要启用 GitHub Actions 发布来源；组织 Free 套餐下，Pages 需要公开仓库。
 
 Node.js 22.13 或以上：
 
