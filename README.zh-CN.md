@@ -6,7 +6,7 @@
 
 为 AVA 提供数据画像计算能力的 ES Modules 基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
 
-支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标目录与计算口径](./docs/metrics.md)。
+支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标支持矩阵](#指标支持矩阵)和[指标目录与计算口径](./docs/metrics.md)。
 
 ## 计算画像
 
@@ -141,3 +141,181 @@ npm pack
 测试覆盖各指标族、精度、空表、参数、预编译复用和受限内存。基准覆盖混合表、唯一字符串、宽数值表、专项组合，以及 16 MB 限制下的 500 万行求和。测量基于本机内存表。
 
 0.5.0 新增 `BASIC_METRICS` 和原生指标跳过诊断。包格式切换为 ES Modules；保留现有 `profile`、`createProfilingPlan`、结果协议 v1 及其默认行为。
+
+## 指标支持矩阵
+
+`profile()` 的 149 个指标 ID（含别名）按计算对象分为[单列指标（126 项）](#单列指标)、[整表指标（17 项）](#整表指标)和[列对指标（6 项）](#列对指标)。✅ 表示满足计算条件时支持，空白表示不适用。统计量无定义时，结果可以是带类型的 `null`。
+
+### 单列指标
+
+字符串默认归为类别。文本、URL、路径、文件和图像通过 `types` 显式指定。原生日期时间包括 DuckDB 的 `DATE` 和各类 `TIMESTAMP`。日期字符串指指定为 `date` 的字符串列，时序数值指指定为 `timeseries` 的数值列。未识别类型包括 `LIST`、`STRUCT` 等，这些列的 `is_orderable` 返回 `false`。
+
+- `top_values` 默认取前 3 项。不同非缺失值数超过总行数的 50% 时跳过该列，可通过 `maxDistinctRatio` 调整阈值。日期字符串的高频值和长度按原文计算，时间边界按成功解析的日期计算。
+- 四项单调性指标需要 `orderBy` 或 `timeIndex`。平稳性、季节性、缺口指标以及 `acf`、`pacf` 需要无缺失的数值或日期时间索引 `timeIndex`。指定 `timeseries` 角色时，只对这些列计算时序指标。省略该角色时，使用索引以外的数值列。
+- 文件元数据和图像内容统计需要运行画像的机器能读取相应路径。文件和图像列的字符、词频等文本指标分析的是路径字符串。
+
+| 指标 | 数值 | 类别 | 布尔 | 原生日期时间 | 文本 | 日期字符串 | URL | 路径 | 文件 | 图像 | 时序数值 | 未识别类型 |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `observation_count` 观测数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `present_count` 非缺失数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `missing_count` 缺失数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `null_count` 空值数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `missing_rate` 缺失率 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `distinct_count` 不同值数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `distinct_rate` 不同值比例 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `duplicate_count` 重复值数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_unique` 是否唯一 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `profiling_type` 画像类型 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `declared_type` 数据库类型 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_groupable` 是否支持分组 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `is_orderable` 是否支持排序 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `column_memory_bytes` 列内存（字节） | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `top_values` 高频值 |  | ✅ | ✅ |  | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |
+| `value_counts` 取值频数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `value_counts_by_value` 按值排序的频数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `singleton_count` 仅出现一次的值数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `singleton_rate` 仅出现一次的值比例 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |
+| `boolean_mode` 布尔众数 |  |  | ✅ |  |  |  |  |  |  |  |  |  |
+| `boolean_mode_count` 布尔众数频次 |  |  | ✅ |  |  |  |  |  |  |  |  |  |
+| `category_imbalance_score` 类别不均衡度 |  | ✅ | ✅ |  | ✅ |  |  |  |  |  |  |  |
+| `min` 最小值 | ✅ |  |  | ✅ |  | ✅ |  |  |  |  | ✅ |  |
+| `max` 最大值 | ✅ |  |  | ✅ |  | ✅ |  |  |  |  | ✅ |  |
+| `mean` 均值 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `sum` 总和 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `median` 中位数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `range` 极差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `stddev` 样本标准差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `stddev_samp` 样本标准差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `variance_samp` 样本方差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `cv` 变异系数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `iqr` 四分位距 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `mad` 中位绝对偏差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `skewness` 偏度 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `excess_kurtosis` 超额峰度 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `negative_count` 负值数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `negative_rate` 负值比例 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `zero_count` 零值数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `zero_rate` 零值比例 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `infinity_count` 无穷值数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `infinity_rate` 无穷值比例 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `quantiles` 分位数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `numeric_histogram` 数值直方图 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `chi_squared_statistic` 卡方统计量 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  |  | ✅ |  |
+| `chi_squared_p_value` 卡方检验 p 值 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |  |  | ✅ |  |
+| `min_timestamp` 最早时间 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `max_timestamp` 最晚时间 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `time_span` 时间跨度 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `datetime_histogram` 日期时间直方图 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `invalid_date_distinct_count` 不同无效日期数 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `invalid_date_count` 无效日期数 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `invalid_date_rate` 无效日期比例 |  |  |  | ✅ |  | ✅ |  |  |  |  |  |  |
+| `min_length` 最短长度 |  | ✅ |  |  | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |
+| `max_length` 最长长度 |  | ✅ |  |  | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |
+| `mean_length` 平均长度 |  | ✅ |  |  | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |
+| `median_length` 长度中位数 |  | ✅ |  |  | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |  |  |
+| `length_counts` 长度频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `length_histogram` 长度直方图 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `character_count` 字符总数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `distinct_character_count` 不同字符数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `character_counts` 字符频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_category_distinct_count` 字符类别数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_category_frequencies` 字符类别频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_category_character_counts` 各字符类别的字符频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_block_distinct_count` 字符区块数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_block_frequencies` 字符区块频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_block_character_counts` 各字符区块的字符频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_script_distinct_count` 书写系统数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_script_frequencies` 书写系统频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `unicode_script_character_counts` 各书写系统的字符频数 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `word_counts` 词频 |  | ✅ |  |  | ✅ |  | ✅ | ✅ | ✅ | ✅ |  |  |
+| `url_scheme_counts` 网址协议频数 |  |  |  |  |  |  | ✅ |  |  |  |  |  |
+| `url_netloc_counts` 网址主机频数 |  |  |  |  |  |  | ✅ |  |  |  |  |  |
+| `url_path_counts` 网址路径频数 |  |  |  |  |  |  | ✅ |  |  |  |  |  |
+| `url_query_counts` 网址查询参数频数 |  |  |  |  |  |  | ✅ |  |  |  |  |  |
+| `url_fragment_counts` 网址片段频数 |  |  |  |  |  |  | ✅ |  |  |  |  |  |
+| `path_common_prefix` 路径公共前缀 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_stem_counts` 文件主名频数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_suffix_counts` 文件后缀频数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_basename_counts` 文件名频数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_parent_counts` 父路径频数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_drive_counts` 驱动器频数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_stem_distinct_count` 不同文件主名数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_suffix_distinct_count` 不同文件后缀数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_basename_distinct_count` 不同文件名数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_parent_distinct_count` 不同父路径数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `path_drive_distinct_count` 不同驱动器数 |  |  |  |  |  |  |  | ✅ | ✅ | ✅ |  |  |
+| `file_size_bytes` 文件大小（字节） |  |  |  |  |  |  |  |  | ✅ | ✅ |  |  |
+| `file_size_histogram` 文件大小直方图 |  |  |  |  |  |  |  |  | ✅ | ✅ |  |  |
+| `file_modified_time_counts` 文件修改时间频数 |  |  |  |  |  |  |  |  | ✅ | ✅ |  |  |
+| `file_access_time_counts` 文件访问时间频数 |  |  |  |  |  |  |  |  | ✅ | ✅ |  |  |
+| `file_metadata_change_time_counts` 文件元数据变更时间频数 |  |  |  |  |  |  |  |  | ✅ | ✅ |  |  |
+| `truncated_image_count` 截断图像数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `image_dimension_counts` 图像尺寸频数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `min_image_width` 最小图像宽度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `max_image_width` 最大图像宽度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `mean_image_width` 平均图像宽度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `median_image_width` 图像宽度中位数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `min_image_height` 最小图像高度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `max_image_height` 最大图像高度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `mean_image_height` 平均图像高度 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `median_image_height` 图像高度中位数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `min_image_area` 最小图像面积 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `max_image_area` 最大图像面积 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `mean_image_area` 平均图像面积 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `median_image_area` 图像面积中位数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `exif_tag_counts` 图像元数据标签频数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `exif_value_counts` 图像元数据取值频数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `duplicate_image_hash_count` 重复图像哈希数 |  |  |  |  |  |  |  |  |  | ✅ |  |  |
+| `is_nondecreasing` 是否单调不减 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `is_nonincreasing` 是否单调不增 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `is_strictly_increasing` 是否严格递增 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `is_strictly_decreasing` 是否严格递减 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `adf_p_value` 平稳性检验 p 值 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `is_stationary` 是否平稳 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `is_seasonal` 是否有季节性 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `seasonal_periods` 季节性周期 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `gap_count` 时间缺口数 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `gap_endpoints` 时间缺口端点 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `min_gap` 最短时间缺口 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `max_gap` 最长时间缺口 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `mean_gap` 平均时间缺口 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `stddev_gap_samp` 时间缺口样本标准差 | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `acf` 自相关（ACF） | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+| `pacf` 偏自相关（PACF） | ✅ |  |  |  |  |  |  |  |  |  | ✅ |  |
+
+### 整表指标
+
+整表指标的结果中，`columns` 为空数组。两项内存指标要求至少选择一列。五项时序和索引指标需要指定 `timeIndex`。
+
+| 指标 ID | 整表 | 计算口径 |
+| --- | :---: | --- |
+| `row_count` | ✅ | 原表的总行数。 |
+| `column_count` | ✅ | 原表的实际列数，包括未选入画像的列。 |
+| `column_type_counts` | ✅ | 按推断或指定的画像类型统计所选列数。 |
+| `missing_cell_count` | ✅ | 所选列中的缺失单元格数。 |
+| `missing_cell_rate` | ✅ | 缺失单元格数占所选列全部单元格的比例。 |
+| `columns_with_missing_count` | ✅ | 至少有一个缺失值的所选列数。 |
+| `all_missing_column_count` | ✅ | 所有值都缺失的所选列数。空表返回 0。 |
+| `duplicate_group_count` | ✅ | 按所选列分组后，包含至少两行的组数。 |
+| `duplicate_group_rate` | ✅ | 重复组数除以总行数。 |
+| `duplicate_group_row_count` | ✅ | 各重复组的行数，按行数降序排列。 |
+| `table_memory_bytes` | ✅ | 所选列在 Pandas 中占用的总字节数，含索引。 |
+| `mean_row_memory_bytes` | ✅ | Pandas 内存字节数除以总行数。空表返回 0。 |
+| `time_series_count` | ✅ | 指定 `timeIndex` 后，参与时序分析的列数。 |
+| `time_index_observation_count` | ✅ | `timeIndex` 的观测数。 |
+| `time_index_start` | ✅ | `timeIndex` 的最小值。 |
+| `time_index_end` | ✅ | `timeIndex` 的最大值。 |
+| `mean_time_index_step` | ✅ | 按画像顺序计算相邻 `timeIndex` 值之差的绝对值，再取均值。 |
+
+### 列对指标
+
+每个无序列对只计算一次。下表的“数值”包括普通数值和时序数值，“类别”包括 `categorical` 和 `boolean`。“其他”包括文本、日期时间、日期字符串、URL、路径、文件和图像。列对指标只接受已识别的类型。
+
+| 指标 | 数值 × 数值 | 数值 × 类别 | 类别 × 类别 | 数值 × 其他 | 类别 × 其他 | 其他 × 其他 | 计算条件 |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | --- |
+| `pearson_r` 皮尔逊相关系数 | ✅ |  |  |  |  |  | 使用两列均为有限数值的行。 |
+| `spearman_rho` 斯皮尔曼相关系数 | ✅ |  |  |  |  |  | 按两列的秩计算相关系数。 |
+| `kendall_tau` 肯德尔秩相关系数 | ✅ |  |  |  |  |  | 按两列取值的相对次序计算 Kendall τ。 |
+| `cramers_v` 克拉默 V 系数 |  |  | ✅ |  |  |  | 每列须有 2–100 个不同的非缺失值，结果经过偏差校正。 |
+| `phi_k` Phi-K 相关系数 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 数值列至少有 2 个不同的非缺失值，其余适用列须有 2–100 个。 |
+| `auto_correlation` 自动关联度 | ✅ | ✅ | ✅ |  |  |  | 每列至少有 2 个不同的非缺失值，类别列最多 100 个。数值对用 Spearman，类别对和混合对用 Cramér V。混合对的数值列分为 10 个等宽箱。 |
