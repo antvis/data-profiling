@@ -30,7 +30,7 @@ jobs:
       - name: Run tests
         run: npm test
       - name: Build website
-        run: npm run build:site -- --base "/${{ github.event.repository.name }}/"
+        run: npm run build:site
       - name: Configure GitHub Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Upload website artifact
