@@ -29,6 +29,7 @@ const status = element('execution-status');
 const reportState = element('report-state');
 const download = element<HTMLButtonElement>('download');
 const loading = element('report-loading');
+const loadingMessage = element('loading-message');
 const pageSize = 25;
 let database: duckdb.AsyncDuckDB | undefined;
 let connection: duckdb.AsyncDuckDBConnection | undefined;
@@ -128,22 +129,26 @@ async function run(operation: () => Promise<void>) {
   if (busy) return;
   setBusy(true);
   errorBox.hidden = true;
+  loadingMessage.textContent = '正在生成报告…';
+  loading.classList.remove('failed');
   loading.hidden = false;
-  reportState.textContent = '生成中';
-  reportState.classList.remove('ready');
+  reportState.hidden = true;
+  status.textContent = '';
   const started = performance.now();
   try {
     await operation();
     render();
-    status.textContent = `${fullResults ? '本机全量统计' : '浏览器计算'} · ${Math.round(performance.now() - started).toLocaleString()} ms`;
+    reportState.title = `${fullResults ? '本机全量统计' : '浏览器计算'} · ${Math.round(performance.now() - started).toLocaleString()} ms`;
+    status.textContent = `报告已生成，${reportState.textContent}`;
   } catch (error) {
     showError(error);
-    reportState.textContent = currentReport ? '未更新' : '生成失败';
-    status.textContent = '本次处理未完成';
+    reportState.textContent = '未更新';
+    reportState.title = '';
+    reportState.classList.remove('ready');
+    reportState.hidden = !currentReport;
     loading.hidden = Boolean(currentReport);
-    if (!currentReport) {
-      element('loading-message').textContent = '请检查文件或网络连接，再点击重新生成。';
-    }
+    loading.classList.add('failed');
+    loadingMessage.textContent = '报告生成失败';
   } finally {
     setBusy(false);
   }
@@ -206,7 +211,7 @@ async function updatePreview() {
   element<HTMLTableElement>('preview').tHead!.replaceChildren(head);
   element<HTMLTableElement>('preview').tBodies[0].replaceChildren(body);
   element('data-empty').hidden = true;
-  element('row-range').textContent = total ? `第 ${page * pageSize + 1}–${Math.min((page + 1) * pageSize, total)} 行，共 ${total.toLocaleString()} 行` : '数据为空表';
+  element('row-range').textContent = total ? `第 ${page * pageSize + 1}–${Math.min((page + 1) * pageSize, total)} 行` : '空表';
   element('page').textContent = `${page + 1} / ${Math.max(1, Math.ceil(total / pageSize))}`;
 }
 
@@ -219,7 +224,7 @@ async function compute() {
     orderBy: orderByInput.value ? [orderByInput.value] : undefined,
   } : {};
   const fullOptions: FullProfileOptions = { ...rowOptions, bins: settings.bins, types: full ? selectedRoles() : undefined };
-  element('loading-message').textContent = full ? '本机引擎正在计算，报告即将更新。' : '正在计算已有数据，报告即将更新。';
+  if (full) loadingMessage.textContent = '本机统计中…';
   const calculated = full ? await profileFullDataset(sourceFile, fullOptions) :
     { results: await profileDataset(adapter, 'input', columns, settings), tableData: undefined };
   const data = calculated.tableData ?? await collectReportData(adapter, 'input', columns, rowOptions);
@@ -245,7 +250,7 @@ async function updateDataset(name: string, format: string, file?: File) {
   resetFullSettings();
   total = Number((await adapter.runAndReadAll('SELECT count(*)::VARCHAR AS n FROM input')).getRowObjectsJson()[0].n);
   element('dataset-name').textContent = sourceName;
-  element('dataset-meta').textContent = `${total.toLocaleString()} 行 · ${columns.length} 列 · 完整数据参与计算`;
+  element('dataset-meta').textContent = `${total.toLocaleString()} 行 · ${columns.length} 列`;
   document.querySelector('.file-mark')!.textContent = format;
   await updatePreview();
   await compute();
@@ -271,12 +276,18 @@ function render() {
     }
     report.contentWindow?.scrollTo(0, scroll);
   };
-  report.srcdoc = currentReport.replace('<head>', '<head><base href="about:srcdoc">');
+  report.srcdoc = currentReport.replace('<head>', `<head><base href="about:srcdoc"><style>
+    body > header { padding-block: 0; }
+    body > header > h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    body > header > :is(.eyebrow, .subtitle) { display: none; }
+    body > header > nav { margin: .75rem 0 0; }
+  </style>`);
   report.hidden = false;
   loading.hidden = true;
   const metricCount = new Set(results.map((row) => row.metric)).size;
   reportState.textContent = fullResults ? `${metricCount} / ${ALL_METRICS.length} 种指标` : `${metricCount} 种指标`;
   reportState.classList.add('ready');
+  reportState.hidden = false;
   download.disabled = busy;
 }
 
@@ -314,6 +325,7 @@ async function upload(file: File) {
 
 modeInput.addEventListener('change', () => {
   const full = modeInput.value === 'full';
+  element('mode-summary').textContent = modeInput.selectedOptions[0].label;
   element('full-settings').hidden = !full;
   element('correlation-control').hidden = full;
   if (full) status.textContent = '配置完成后点击重新生成';
