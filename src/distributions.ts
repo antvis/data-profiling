@@ -1,19 +1,19 @@
-import { kind, scalar, type ProfileColumn } from './plan.js';
-import type { ProfileOptions, ProfilingConnection } from './profile.js';
-import type { MetricValue, ProfileResult } from './types.js';
+import { identifier, kind, tableSource, type ProfileColumn, type ProfilingConnection } from './duckdb.js';
+import type { ProfileOptions } from './profile.js';
+import { scalar, type MetricValue, type ProfileResult } from './types.js';
 
+/** Return native results and the remaining chi-square inputs needed by Python. */
 export async function nativeDistributions(
   connection: ProfilingConnection,
   table: string,
   columns: readonly ProfileColumn[],
   requested: ReadonlyMap<string, unknown>,
-  options: ProfileOptions
+  options: Pick<ProfileOptions, 'quantiles' | 'bins' | 'maxBins' | 'density'>
 ) {
   const results: ProfileResult[] = [];
   const completed = new Map<string, Set<string>>();
   const chiTests: { column: string; statistic: number; dof: number }[] = [];
-  const q = (name: string) => `"${name.replaceAll('"', '""')}"`;
-  const source = `query_table('${table.replaceAll("'", "''")}')`;
+  const source = tableSource(table);
   const numeric = columns.filter((column) => kind(column.type) === 'numeric');
   const points = options.quantiles ?? [0.05, 0.25, 0.5, 0.75, 0.95];
   const emit = (column: string, metric: string, value: MetricValue, parameters: Record<string, unknown> = {}) => {
@@ -22,13 +22,14 @@ export async function nativeDistributions(
     completed.get(column)!.add(metric);
   };
   if (requested.has('quantiles')) {
+    // Exact decimal and wide-integer interpolation uses grouped values in Python.
     const eligible = numeric.filter((column) => !/^(DECIMAL|NUMERIC|U?HUGEINT|BIGNUM)/i.test(column.type));
     if (eligible.length) {
       const expressions = eligible.map(
         (column, index) =>
-          `quantile_cont(${q(column.name)},[${points
+          `quantile_cont(${identifier(column.name)},[${points
             .map((point) => `${point}::DOUBLE`)
-            .join(',')}]) FILTER (WHERE NOT isnan(${q(column.name)}::DOUBLE)) AS q${index}`
+            .join(',')}]) FILTER (WHERE NOT isnan(${identifier(column.name)}::DOUBLE)) AS q${index}`
       );
       const row = (
         await connection.runAndReadAll(`SELECT ${expressions.join(', ')} FROM ${source}`)
@@ -50,8 +51,9 @@ export async function nativeDistributions(
   const histogram = requested.has('numeric_histogram');
   const chi = requested.has('chi_squared_statistic') || requested.has('chi_squared_p_value');
   if (!numeric.length || (!histogram && !chi)) return { results, completed, chiTests };
+  // Determine bin edges from a metadata query, then ask DuckDB to count observations in those bins.
   const metadata = numeric.flatMap((column, index) => {
-    const col = q(column.name),
+    const col = identifier(column.name),
       filter = `FILTER (WHERE isfinite(${col}::DOUBLE))`;
     return [
       `min(${col}::DOUBLE) ${filter} AS lo${index}`,
@@ -99,7 +101,9 @@ export async function nativeDistributions(
         await connection.runAndReadAll(
           `SELECT ${active
             .map((job) => {
-              const col = q(job.column.name),
+              // DuckDB uses inclusive upper bounds. Shift interior bounds down one float
+              // so a value on a shared edge joins the bin to its right.
+              const col = identifier(job.column.name),
                 upper = job.edges
                   .slice(1)
                   .map((value, index) =>
@@ -124,6 +128,7 @@ export async function nativeDistributions(
       const statistic = total ? counts.reduce((sum, count) => sum + (Number(count) - expected) ** 2 / expected, 0) : 0;
       if (requested.has('chi_squared_statistic'))
         emit(job.column.name, 'chi_squared_statistic', { type: 'number', value: statistic });
+      // SciPy can compute the p-value from the statistic and degrees of freedom alone.
       if (requested.has('chi_squared_p_value')) {
         if (total) chiTests.push({ column: job.column.name, statistic, dof: counts.length - 1 });
         else emit(job.column.name, 'chi_squared_p_value', { type: 'number', value: 0 });

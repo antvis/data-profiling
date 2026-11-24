@@ -1,10 +1,65 @@
-import { additionalMetricIds } from './plan.js';
+/** Metrics selected when the native plan is compiled without an explicit list. */
+export const defaultNativeMetrics = [
+  'row_count',
+  'column_count',
+  'missing_count',
+  'null_count',
+  'distinct_count',
+  'duplicate_count',
+  'top_values',
+  'min',
+  'max',
+  'min_length',
+  'max_length',
+  'mean',
+  'sum',
+  'stddev',
+  'median',
+];
+
+/** Other metrics the single-query planner can compile when explicitly requested. */
+export const additionalMetricIds = [
+  'observation_count',
+  'present_count',
+  'missing_rate',
+  'distinct_rate',
+  'is_unique',
+  'missing_cell_count',
+  'missing_cell_rate',
+  'columns_with_missing_count',
+  'all_missing_column_count',
+  'profiling_type',
+  'declared_type',
+  'is_groupable',
+  'is_orderable',
+  'variance_samp',
+  'stddev_samp',
+  'cv',
+  'skewness',
+  'excess_kurtosis',
+  'range',
+  'iqr',
+  'mad',
+  'negative_count',
+  'negative_rate',
+  'zero_count',
+  'zero_rate',
+  'infinity_count',
+  'infinity_rate',
+  'mean_length',
+  'median_length',
+  'min_timestamp',
+  'max_timestamp',
+  'time_span',
+];
+export const nativeMetricIds = new Set([...defaultNativeMetrics, ...additionalMetricIds]);
 
 /** Native overview metrics matching AVA's default selection. */
 export const BASIC_METRICS = Object.freeze([
   'row_count', 'null_count', 'distinct_count', 'top_values', 'min', 'max', 'mean',
 ] as const);
 
+/** Families that the full profile arranges into native or Python execution stages. */
 export const metricFamilies = {
   frequency: [
     'value_counts',
@@ -110,22 +165,7 @@ export const metricFamilies = {
 /** All statistical metrics; I/O and ordered families require explicit column roles/index. */
 export const ALL_METRICS: readonly string[] = [
   ...new Set([
-    'row_count',
-    'column_count',
-    'missing_count',
-    'null_count',
-    'distinct_count',
-    'duplicate_count',
-    'top_values',
-    'min',
-    'max',
-    'min_length',
-    'max_length',
-    'mean',
-    'sum',
-    'stddev',
-    'median',
-    ...additionalMetricIds,
+    ...nativeMetricIds,
     ...Object.values(metricFamilies).flat(),
   ]),
 ];

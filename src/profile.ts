@@ -1,27 +1,13 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { Socket } from 'node:net';
-import {
-  createProfilingPlan,
-  kind,
-  nanAsNull,
-  scalar,
-  type MetricConfig,
-  type ProfileColumn,
-  type ProfilingOptions,
-} from './plan.js';
-import { ALL_METRICS, metricFamilies } from './metrics.js';
+import { identifier, kind, literal, nanAsNull, tableSource, validateProfilingTarget, type ProfileColumn, type ProfilingConnection } from './duckdb.js';
+import { createProfilingPlan, type MetricConfig, type ProfilingOptions } from './plan.js';
+import { ALL_METRICS, metricFamilies, nativeMetricIds } from './metrics.js';
 import { nativeDistributions } from './distributions.js';
-import type { MetricValue, ProfileResult } from './types.js';
+import { runPythonWorker } from './python-worker.js';
+import { scalar, type MetricValue, type ProfileResult } from './types.js';
 
-export { ALL_METRICS } from './metrics.js';
-export interface ProfilingConnection {
-  run(sql: string): Promise<unknown>;
-  runAndReadAll(sql: string): Promise<{ getRowObjectsJson(): Record<string, unknown>[] }>;
-}
 export interface ProfileOptions extends Omit<ProfilingOptions, 'semantics'> {
   types?: Readonly<
     Record<
@@ -44,8 +30,6 @@ export interface ProfileOptions extends Omit<ProfilingOptions, 'semantics'> {
   autolag?: 'AIC' | 'BIC' | 't-stat' | null;
   memoryDeep?: boolean;
 }
-const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
-const lit = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const id = (value: MetricConfig) => (typeof value === 'string' ? value : value.id);
 const integer = (value: unknown): MetricValue => scalar('integer', value);
 const number = (value: number): MetricValue => scalar('number', value);
@@ -62,6 +46,7 @@ const labels = {
   timeseries: 'TimeSeries',
 };
 
+/** Frequency entries keep the source column's type, while their counts are always exact integers. */
 function fieldValue(raw: unknown, type: string): MetricValue {
   if (raw == null) return { type: 'null', value: null };
   if (/^BOOLEAN$/i.test(type)) return scalar('boolean', raw);
@@ -86,95 +71,11 @@ function role(column: ProfileColumn, options: ProfileOptions): string {
 }
 
 function assignedType(name: string, options: ProfileOptions) {
+  // A column named after an Object prototype property needs an explicit role like any other column.
   return options.types && Object.hasOwn(options.types, name) ? options.types[name] : undefined;
 }
 
-const workers = new Map<string, ReturnType<typeof createWorker>>();
-
-function createWorker(python: string) {
-  const child = spawn(python, [fileURLToPath(new URL('./worker.py', import.meta.url))], { stdio: ['pipe', 'pipe', 'pipe'] });
-  const pending = new Map<number, { resolve(value: ProfileResult[]): void; reject(error: unknown): void }>();
-  let next = 0,
-    output = '',
-    errors = '',
-    idle: NodeJS.Timeout | undefined;
-  const references = (active: boolean) => {
-    if (active) child.ref();
-    else child.unref();
-    for (const stream of [child.stdin, child.stdout, child.stderr]) {
-      if (active) (stream as Socket).ref();
-      else (stream as Socket).unref();
-    }
-  };
-  const fail = (error: unknown) => {
-    clearTimeout(idle);
-    for (const job of pending.values()) job.reject(error);
-    pending.clear();
-    if (workers.get(python) === api) workers.delete(python);
-    child.kill();
-  };
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (value) => {
-    errors = (errors + value).slice(-65536);
-  });
-  child.on('error', fail);
-  for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', fail);
-  child.on('close', (code) => fail(new Error(`profiling worker exited (${code}): ${errors.trim()}`)));
-  child.stdout.on('data', (value) => {
-    output += value;
-    let end: number;
-    while ((end = output.indexOf('\n')) >= 0) {
-      const line = output.slice(0, end);
-      output = output.slice(end + 1);
-      try {
-        const message = JSON.parse(line);
-        const job = pending.get(message.id);
-        if (!job) throw new Error('Unexpected profiling worker response');
-        pending.delete(message.id);
-        if (message.error) job.reject(new Error(`profiling worker failed: ${message.error}`));
-        else job.resolve(message.results);
-      } catch (error) {
-        fail(error);
-        return;
-      }
-    }
-    if (!pending.size) {
-      references(false);
-      idle = setTimeout(() => {
-        if (workers.get(python) === api) workers.delete(python);
-        child.stdin.end();
-      }, 30000);
-      idle.unref();
-    }
-  });
-  const api = {
-    run(request: unknown): Promise<ProfileResult[]> {
-      clearTimeout(idle);
-      references(true);
-      return new Promise((resolve, reject) => {
-        const id = next++;
-        pending.set(id, { resolve, reject });
-        child.stdin.write(JSON.stringify({ id, request }) + '\n');
-      });
-    },
-  };
-  return api;
-}
-
-function worker(python: string, request: unknown): Promise<ProfileResult[]> {
-  if (!workers.has(python)) workers.set(python, createWorker(python));
-  return workers.get(python)!.run(request);
-}
-
-/** Native aggregates first; export only the inputs required by non-SQL algorithms. */
-export async function profile(
-  connection: ProfilingConnection,
-  tableName: string,
-  columns: readonly ProfileColumn[],
-  options: ProfileOptions = {}
-): Promise<ProfileResult[]> {
-  createProfilingPlan(tableName, columns, { metrics: [] });
+function validateOptions(columns: readonly ProfileColumn[], options: ProfileOptions): void {
   const optionNames = [
     'metrics',
     'types',
@@ -252,6 +153,18 @@ export async function profile(
     throw new Error('Invalid stopWords');
   if (options.autolag !== undefined && options.autolag !== null && !['AIC', 'BIC', 't-stat'].includes(options.autolag))
     throw new Error('Invalid autolag');
+}
+
+/** Run DuckDB aggregates first and export only the inputs needed by Python algorithms. */
+export async function profile(
+  connection: ProfilingConnection,
+  tableName: string,
+  columns: readonly ProfileColumn[],
+  options: ProfileOptions = {}
+): Promise<ProfileResult[]> {
+  validateProfilingTarget(tableName, columns);
+  validateOptions(columns, options);
+  // An omitted metric list selects the whole catalog. An empty list requests no work.
   const requested = new Map((options.metrics ?? ALL_METRICS).map((metric) => [id(metric), metric]));
   for (const [name, config] of requested) {
     if (!ALL_METRICS.includes(name)) throw new Error(`Unknown metric: ${name}`);
@@ -268,8 +181,8 @@ export async function profile(
     ].some((metric) => requested.has(metric))
   )
     throw new Error('TimeSeries columns require timeIndex');
-  const extended = new Set<string>(Object.values(metricFamilies).flat());
-  const native = [...requested.values()].filter((config) => !extended.has(id(config)));
+  // Single-query aggregates share the planner used by prepared SQL and the browser.
+  const native = [...requested.values()].filter((config) => nativeMetricIds.has(id(config)));
   const plan = createProfilingPlan(tableName, columns, { metrics: native, semantics: 'extended' });
   const results = plan.metrics.length
     ? plan.decode((await connection.runAndReadAll(plan.sql)).getRowObjectsJson()[0])
@@ -287,9 +200,10 @@ export async function profile(
     }
     append('column_type_counts', { type: 'object', value: counts });
   }
-  const source = `query_table(${lit(tableName)})`;
+  const source = tableSource(tableName);
   const distributions = await nativeDistributions(connection, tableName, columns, requested, options);
   results.push(...distributions.results);
+  // One frequency table per column feeds all requested frequency, mode, and imbalance metrics.
   for (const column of columns) {
     const kind = role(column, options);
     if (kind === 'unknown') continue;
@@ -300,7 +214,7 @@ export async function profile(
         (metric !== 'category_imbalance_score' || ['boolean', 'categorical', 'text'].includes(kind))
     );
     if (!frequency.length) continue;
-    const field = q(column.name);
+    const field = identifier(column.name);
     const valid = /^(FLOAT|DOUBLE|REAL)$/i.test(column.type) ? ` AND NOT isnan(${field})` : '';
     const value = /^DATE$/i.test(column.type)
       ? 'v::VARCHAR'
@@ -341,6 +255,7 @@ export async function profile(
       append(metric, output, [column.name]);
     }
   }
+  // Duplicate groups compare the requested columns and normalize NaN to NULL before grouping.
   const duplicates = ['duplicate_group_count', 'duplicate_group_rate', 'duplicate_group_row_count'].filter((metric) =>
     requested.has(metric)
   );
@@ -362,6 +277,7 @@ export async function profile(
     if (requested.has('duplicate_group_row_count'))
       append('duplicate_group_row_count', { type: 'list', value: (row.groups as unknown[]).map(integer) });
   }
+  // Schedule only applicable grouped algorithms whose results DuckDB has not already supplied.
   const tasks: { column: ProfileColumn; role: string; metrics: string[]; path?: string }[] = [];
   for (const column of columns) {
     const type = role(column, options);
@@ -377,6 +293,7 @@ export async function profile(
       ...new Set(families.flatMap((family) => [...metricFamilies[family as keyof typeof metricFamilies]])),
     ].filter((metric) => requested.has(metric) && !distributions.completed.get(column.name)?.has(metric));
     if (type === 'date' && !/^(DATE|TIMESTAMP)/i.test(column.type)) {
+      // A string assigned the date role needs parsing before temporal bounds can be computed.
       metrics.push(
         ...['min', 'max', 'min_timestamp', 'max_timestamp', 'time_span'].filter((metric) => requested.has(metric))
       );
@@ -384,17 +301,15 @@ export async function profile(
     if (type !== 'unknown' && metrics.length) tasks.push({ column, role: type, metrics });
   }
   if (requested.has('pearson_r')) {
+    // Each pair uses rows where both values are finite and stays inside DuckDB.
     const numeric = columns.filter((column) => ['numeric', 'timeseries'].includes(role(column, options)));
     const pairs = numeric.flatMap((a, index) => numeric.slice(index + 1).map((b) => [a, b] as const));
     if (pairs.length) {
-      const sql = pairs
-        .map(
-          ([a, b], index) =>
-            `corr(${q(a.name)}, ${q(b.name)}) FILTER (WHERE isfinite(${q(a.name)}) AND isfinite(${q(
-              b.name
-            )})) AS p${index}`
-        )
-        .join(', ');
+      const sql = pairs.map(([a, b], index) => {
+        const left = identifier(a.name);
+        const right = identifier(b.name);
+        return `corr(${left}, ${right}) FILTER (WHERE isfinite(${left}) AND isfinite(${right})) AS p${index}`;
+      }).join(', ');
       const row = (await connection.runAndReadAll(`SELECT ${sql} FROM ${source}`)).getRowObjectsJson()[0];
       pairs.forEach(([a, b], index) =>
         append(
@@ -405,6 +320,7 @@ export async function profile(
       );
     }
   }
+  // The same eligibility rules govern whether a pairwise metric runs and which columns it exports.
   const pairColumns = (metric: string) => columns.filter((column) => {
     const type = role(column, options);
     return metric === 'phi_k' ? type !== 'unknown'
@@ -433,22 +349,24 @@ export async function profile(
   if (!tasks.length && !pair.length && !memory.length && !needsOrder && !distributions.chiTests.length) return results;
   const directory = await mkdtemp(join(tmpdir(), 'data-profiling-'));
   try {
+    // Grouped algorithms use one row per distinct value. Text casts protect dates and wide integers in transit.
     for (const [index, task] of tasks.entries()) {
       task.path = join(directory, `group-${index}.parquet`);
-      const name = q(task.column.name);
+      const name = identifier(task.column.name);
       const column = /^(U?HUGEINT|BIGNUM|DATE)$/i.test(task.column.type)
         ? `${name}::VARCHAR`
         : /^(FLOAT|DOUBLE|REAL)$/i.test(task.column.type)
         ? `CASE WHEN isnan(${name}) THEN NULL ELSE ${name} END`
         : name;
       await connection.run(
-        `COPY (SELECT ${column} AS value, count(*) AS count FROM ${source} GROUP BY ${column}) TO ${lit(
+        `COPY (SELECT ${column} AS value, count(*) AS count FROM ${source} GROUP BY ${column}) TO ${literal(
           task.path
         )} (FORMAT PARQUET)`
       );
     }
     let raw: string | undefined;
     if (pair.length || memory.length || needsOrder) {
+      // Pairwise and ordered metrics share a projected export. Memory profiling needs every requested column.
       raw = join(directory, 'columns.parquet');
       const pairNames = new Set(pair.flatMap((metric) => pairColumns(metric).map((column) => column.name)));
       const selected = memory.length
@@ -464,17 +382,17 @@ export async function profile(
           `COPY (SELECT ${selected
             .map((column) =>
               /^(U?HUGEINT|BIGNUM)$/i.test(column.type)
-                ? `${q(column.name)}::VARCHAR AS ${q(column.name)}`
-                : q(column.name)
+                ? `${identifier(column.name)}::VARCHAR AS ${identifier(column.name)}`
+                : identifier(column.name)
             )
-            .join(', ')} FROM ${source}${order.length ? ' ORDER BY ' + order.map(q).join(', ') : ''}) TO ${lit(
+            .join(', ')} FROM ${source}${order.length ? ' ORDER BY ' + order.map(identifier).join(', ') : ''}) TO ${literal(
             raw
           )} (FORMAT PARQUET)`
         );
       } else raw = undefined;
     }
     results.push(
-      ...(await worker(options.python ?? 'python3', {
+      ...(await runPythonWorker(options.python ?? 'python3', {
         table: tableName,
         tasks,
         raw,
@@ -490,6 +408,7 @@ export async function profile(
     );
     return results;
   } finally {
+    // Parquet inputs belong to this request, even when the Python process remains alive.
     await rm(directory, { recursive: true, force: true });
   }
 }

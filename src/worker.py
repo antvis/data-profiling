@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 
 
 def encode(value):
+    """Keep protocol types, exact numbers and special floats safe for JSON transport."""
     if value is None or value is pd.NaT or value is pd.NA:
         return {"type": "null", "value": None}
     if isinstance(value, (bool, np.bool_)):
@@ -51,6 +52,7 @@ def entries(counts, by_value=False):
 
 
 def quantile(values, weights, points):
+    """Interpolate ranks in the original population using cumulative frequency weights."""
     if not len(values):
         return [None for _ in points]
     order = np.argsort(values)
@@ -63,6 +65,7 @@ def quantile(values, weights, points):
         low, high = math.floor(position), math.ceil(position)
         a, b = values[np.searchsorted(cumulative, low, side="right")], values[np.searchsorted(cumulative, high, side="right")]
         fraction = position - low
+        # Avoid rounding exact endpoints to binary floats before interpolation.
         if isinstance(a, Decimal) or isinstance(a, (int, np.integer)) and max(abs(int(a)), abs(int(b))) > 2**53:
             if not isinstance(a, Decimal) and fraction == 0:
                 result.append(int(a))
@@ -77,6 +80,7 @@ def quantile(values, weights, points):
 
 
 def histogram(values, weights, options, auto=False):
+    """Apply NumPy bin boundaries to finite observations using grouped counts."""
     values, weights = np.asarray(values, dtype=float), np.asarray(weights, dtype=np.int64)
     finite = np.isfinite(values)
     values, weights = values[finite], weights[finite]
@@ -90,6 +94,7 @@ def histogram(values, weights, options, auto=False):
         maximum = options.get("maxBins", 250)
         requested = options.get("bins", 50)
         if auto or requested == 0:
+            # Combine the Freedman–Diaconis and Sturges widths for automatic bins.
             count = int(weights.sum())
             q1, q3 = quantile(values, weights, [0.25, 0.75])
             fd = 2 * (q3 - q1) / count ** (1 / 3)
@@ -106,6 +111,7 @@ def histogram(values, weights, options, auto=False):
 
 
 def text_stats(counts, wanted, options):
+    """Weight length, character, and word statistics by each input's occurrence count."""
     result = {}
     lengths = Counter()
     if wanted & {"length_counts", "length_histogram"}:
@@ -166,6 +172,7 @@ def file_stat(path):
 
 
 def file_path(path, root):
+    """Apply the caller's file boundary to canonical paths, including symlink targets."""
     if root is None:
         return path
     directory = Path(root).resolve(strict=True)
@@ -213,6 +220,7 @@ def image_info(path, exif, hash_image):
 
 
 def image_stats(counts, wanted, options):
+    """Read unique image paths and weight dimension summaries by occurrences."""
     dimensions, hashes, tags, exif_values = Counter(), Counter(), Counter(), defaultdict(Counter)
     truncated = 0
     for path, count in counts.items():
@@ -234,6 +242,7 @@ def image_stats(counts, wanted, options):
 
 
 def grouped(task, options):
+    """Reuse one grouped export for every applicable specialist metric on a column."""
     data = pq.read_table(task["path"]).to_pydict()
     if task["column"]["type"].upper() in {"HUGEINT", "UHUGEINT", "BIGNUM"}:
         data["value"] = [int(value) if value is not None else None for value in data["value"]]
@@ -250,6 +259,7 @@ def grouped(task, options):
     if kind in {"categorical", "text", "url", "path", "file", "image"}:
         stats.update(text_stats(counts, wanted, options))
     if kind == "date":
+        # Parse each distinct string once while retaining the row count for invalid dates.
         valid, invalid = Counter(), Counter()
         for value, count in counts.items():
             parsed = pd.to_datetime(value, errors="coerce", utc=True)
@@ -304,6 +314,7 @@ def cramers(a, b):
 
 
 def correlations(frame, roles, wanted):
+    """Run the requested pairwise methods on the selected raw observations."""
     numeric = [name for name in frame if roles[name] in {"numeric", "timeseries"}]
     categorical = [name for name in frame if roles[name] in {"categorical", "boolean"} and 1 < frame[name].nunique() <= 100]
     frame = frame.copy()
@@ -331,6 +342,7 @@ def correlations(frame, roles, wanted):
 
 
 def seasonality(values):
+    """Estimate seasonal periods from FFT peaks, suppressing harmonics of selected peaks."""
     from scipy.fft import fft, fftfreq
     from scipy.signal import find_peaks
     if len(values) < 3:
@@ -353,6 +365,7 @@ def seasonality(values):
 
 
 def ordered_stats(frame, roles, request):
+    """Compute ordered metrics in the order set by the DuckDB export."""
     options, wanted = request["options"], set(request["time"] + request["ordered"])
     index_name = options.get("timeIndex")
     index = frame[index_name] if index_name else pd.Series(np.arange(len(frame)))
@@ -371,6 +384,7 @@ def ordered_stats(frame, roles, request):
         stats = {"is_nondecreasing": present.is_monotonic_increasing, "is_nonincreasing": present.is_monotonic_decreasing, "is_strictly_increasing": present.is_monotonic_increasing and present.is_unique, "is_strictly_decreasing": present.is_monotonic_decreasing and present.is_unique}
         explicit_series = any(role == "timeseries" for role in roles.values())
         if request["time"] and (not explicit_series or roles[name] == "timeseries"):
+            # Measure gaps between observed values of this series using twice the mean positive step.
             times = index[series.notna()]
             differences = times.diff()
             positive = differences[differences > (pd.Timedelta(0) if pd.api.types.is_datetime64_any_dtype(times) else 0)]
@@ -407,6 +421,7 @@ def ordered_stats(frame, roles, request):
 
 
 def main(request):
+    # File and image reads can be reused within this request. Later requests see current metadata.
     file_stat.cache_clear()
     image_info.cache_clear()
     results = []
@@ -434,6 +449,7 @@ def main(request):
         for test in request["chiTests"]:
             emit("chi_squared_p_value", [test["column"]], chi2.sf(test["statistic"], test["dof"]))
     if request.get("raw"):
+        # Pairwise, memory, and ordered calculations share a single projected Parquet input.
         frame = pq.read_table(request["raw"]).to_pandas()
         for column in request["columns"]:
             if column["name"] in frame and column["type"].upper() in {"HUGEINT", "UHUGEINT", "BIGNUM"}:
@@ -465,6 +481,7 @@ if __name__ == "__main__":
         for line in sys.stdin:
             message = json.loads(line)
             try:
+                # Keep stdout reserved for one JSON response line per request.
                 with contextlib.redirect_stdout(sys.stderr):
                     results = main(message["request"])
                 response = {"id": message["id"], "results": results}

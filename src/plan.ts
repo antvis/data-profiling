@@ -1,88 +1,17 @@
-import type { MetricValue, ProfileResult, ProfileSkip, ProfileDiagnostics } from './types.js';
+import { identifier, kind, literal, nanAsNull, tableSource, validateProfilingTarget, type ProfileColumn } from './duckdb.js';
+import { defaultNativeMetrics, nativeMetricIds } from './metrics.js';
+import { scalar, type MetricValue, type ProfileResult, type ProfileSkip, type ProfileDiagnostics } from './types.js';
 
-export type ProfileColumn = { name: string; type: string };
 export type MetricConfig = string | { id: string; [option: string]: unknown };
 export interface ProfilingOptions {
   metrics?: readonly MetricConfig[];
+  /** Extended mode treats NaN as missing and retains infinity in supported aggregates. */
   semantics?: 'finite' | 'extended';
-}
-
-const metricIds = [
-  'row_count',
-  'column_count',
-  'missing_count',
-  'null_count',
-  'distinct_count',
-  'duplicate_count',
-  'top_values',
-  'min',
-  'max',
-  'min_length',
-  'max_length',
-  'mean',
-  'sum',
-  'stddev',
-  'median',
-];
-export const additionalMetricIds = [
-  'observation_count',
-  'present_count',
-  'missing_rate',
-  'distinct_rate',
-  'is_unique',
-  'missing_cell_count',
-  'missing_cell_rate',
-  'columns_with_missing_count',
-  'all_missing_column_count',
-  'profiling_type',
-  'declared_type',
-  'is_groupable',
-  'is_orderable',
-  'variance_samp',
-  'stddev_samp',
-  'cv',
-  'skewness',
-  'excess_kurtosis',
-  'range',
-  'iqr',
-  'mad',
-  'negative_count',
-  'negative_rate',
-  'zero_count',
-  'zero_rate',
-  'infinity_count',
-  'infinity_rate',
-  'mean_length',
-  'median_length',
-  'min_timestamp',
-  'max_timestamp',
-  'time_span',
-];
-const supportedMetricIds = new Set([...metricIds, ...additionalMetricIds]);
-export const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
-export const identifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
-
-export function nanAsNull(column: ProfileColumn): string {
-  const name = identifier(column.name);
-  return /^(FLOAT|DOUBLE|REAL)$/i.test(column.type) ? `CASE WHEN isnan(${name}) THEN NULL ELSE ${name} END` : name;
-}
-
-export function kind(type: string): 'numeric' | 'string' | 'boolean' | 'date' | 'unknown' {
-  if (
-    /^(U?(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT)|INT[1248]?|FLOAT|DOUBLE|REAL|DECIMAL(?:\(\d+,\s*\d+\))?|NUMERIC(?:\(\d+,\s*\d+\))?|BIGNUM)$/i.test(
-      type
-    )
-  )
-    return 'numeric';
-  if (/^(VARCHAR|CHAR|BPCHAR|TEXT|STRING|UUID|ENUM\(.*\))$/i.test(type)) return 'string';
-  if (/^BOOLEAN$/i.test(type)) return 'boolean';
-  if (/^(DATE|TIMESTAMP(_S|_MS|_NS|TZ| WITH TIME ZONE)?)$/i.test(type)) return 'date';
-  return 'unknown';
 }
 
 function parameters(config: MetricConfig): { id: string; limit?: number; maxDistinctRatio?: number } {
   const value = typeof config === 'string' ? { id: config } : config;
-  if (!value || !supportedMetricIds.has(value.id)) throw new Error(`Unknown metric: ${value?.id}`);
+  if (!value || !nativeMetricIds.has(value.id)) throw new Error(`Unknown metric: ${value?.id}`);
   for (const name of Object.keys(value)) {
     if (name !== 'id' && (value.id !== 'top_values' || !['limit', 'maxDistinctRatio'].includes(name))) {
       throw new Error(`Unknown option for ${value.id}: ${name}`);
@@ -99,6 +28,7 @@ function parameters(config: MetricConfig): { id: string; limit?: number; maxDist
   return { id: value.id, limit, maxDistinctRatio: ratio };
 }
 
+/** Map aggregate outputs to protocol types, including metrics whose type differs from their input. */
 function valueType(type: string, metric: string): MetricValue['type'] {
   if (['profiling_type', 'declared_type'].includes(metric)) return 'string';
   if (['is_unique', 'is_groupable', 'is_orderable'].includes(metric)) return 'boolean';
@@ -151,36 +81,6 @@ export interface ProfilingPlan {
   decodeWithDiagnostics(row: Record<string, unknown>): ProfileDiagnostics;
 }
 
-export function scalar(type: MetricValue['type'], raw: unknown): MetricValue {
-  if (raw == null) return { type: 'null', value: null };
-  if (type === 'number') {
-    if (typeof raw !== 'number' && typeof raw !== 'string') throw new Error('Invalid numeric aggregate');
-    const value = Number(raw);
-    if (Number.isFinite(value)) return { type, value };
-    if (raw === 'NaN' || Number.isNaN(raw)) return { type, value: 'NaN' };
-    if (value === Infinity) return { type, value: 'Infinity' };
-    if (value === -Infinity) return { type, value: '-Infinity' };
-    throw new Error('Invalid numeric aggregate');
-  }
-  if (type === 'boolean') {
-    if (typeof raw !== 'boolean') throw new Error('Invalid boolean aggregate');
-    return { type, value: raw };
-  }
-  if (type === 'integer' || type === 'duration') {
-    if ((typeof raw === 'number' && !Number.isSafeInteger(raw)) || !/^-?\d+$/.test(String(raw))) {
-      throw new Error('Invalid or lossy integer aggregate; use getRowObjectsJson()');
-    }
-    return type === 'duration'
-      ? { type, value: { amount: String(raw), unit: 'nanosecond' } }
-      : { type, value: String(raw) };
-  }
-  if (type === 'decimal' || type === 'string' || type === 'date' || type === 'timestamp' || type === 'timestamptz') {
-    if (typeof raw !== 'string') throw new Error(`Invalid ${type} aggregate`);
-    return { type, value: raw };
-  }
-  throw new Error(`Invalid scalar type: ${type}`);
-}
-
 /** Compile one native aggregate query from the schema; decode only the resulting statistics. */
 export function createProfilingPlan(
   tableName: string,
@@ -189,28 +89,20 @@ export function createProfilingPlan(
 ): ProfilingPlan {
   if (options.semantics !== undefined && !['finite', 'extended'].includes(options.semantics))
     throw new Error('Unknown profiling semantics');
-  if (typeof tableName !== 'string' || !tableName) throw new Error('tableName must be a non-empty string');
-  const names = new Set<string>();
-  for (const column of columns) {
-    if (typeof column.name !== 'string' || !column.name || typeof column.type !== 'string' || !column.type) {
-      throw new Error('Columns require non-empty names and types');
-    }
-    const key = column.name.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-    if (names.has(key)) throw new Error(`Duplicate column: ${column.name}`);
-    names.add(key);
-  }
+  validateProfilingTarget(tableName, columns);
   // The last configuration wins, including configurations that skip a metric.
   const metrics = new Map(
-    (options.metrics ?? metricIds).map((config) => {
+    (options.metrics ?? defaultNativeMetrics).map((config) => {
       const metric = parameters(config);
       return [metric.id, metric];
     })
   );
-  const source = `query_table(${literal(tableName)})`;
+  const source = tableSource(tableName);
   const input = (field: ProfileColumn) => options.semantics === 'extended' ? nanAsNull(field) : identifier(field.name);
   const aggregates = new Map<string, string>();
   const planned: PlannedMetric[] = [];
   const omitted: ProfileSkip[] = [];
+  // Multiple metrics can decode the same SQL expression, such as null_count and missing_count.
   const aggregate = (expression: string): string => {
     if (!aggregates.has(expression)) aggregates.set(expression, `m${aggregates.size}`);
     return aggregates.get(expression)!;
@@ -238,6 +130,7 @@ export function createProfilingPlan(
     if (
       ['missing_cell_count', 'missing_cell_rate', 'columns_with_missing_count', 'all_missing_column_count'].includes(id)
     ) {
+      // Table-wide missingness uses the requested column subset and the selected NaN semantics.
       const missing = columns.map((field) => `(count(*) - count(${input(field)}))`);
       const expression = id.startsWith('missing_cell')
         ? missing.join(' + ') || '0'
@@ -329,6 +222,7 @@ export function createProfilingPlan(
           break;
         case 'time_span': {
           if (logicalType !== 'date') { skip(); continue; }
+          // Convert differences to nanoseconds while retaining the source timestamp's resolution.
           const value = /^(DATE)$/i.test(type)
             ? `${col}`
             : /^TIMESTAMP_NS$/i.test(type)
@@ -357,6 +251,7 @@ export function createProfilingPlan(
           break;
         case 'top_values': {
           if (logicalType !== 'string' && logicalType !== 'boolean') { skip(); continue; }
+          // NULL signals a cardinality skip. An empty list is a successful result.
           const count = aggregate(distinct);
           const top = aggregate(`CASE WHEN ${distinct} > count(*) * ${maxDistinctRatio} THEN NULL
             ELSE coalesce(first((SELECT list(struct_pack(value := v, count := n) ORDER BY n DESC, v ASC)
@@ -377,6 +272,8 @@ export function createProfilingPlan(
                 string
               >
             )[id] ?? id;
+          // DuckDB's dispersion and shape aggregates need finite inputs.
+          // Extended mode handles infinities explicitly for those metrics below.
           const finite =
             logicalType === 'date' ||
             (/^(FLOAT|DOUBLE|REAL)$/i.test(type) &&
@@ -411,12 +308,14 @@ export function createProfilingPlan(
     }
   }
   const expressions = [...aggregates].map(([expression, alias]) => `${expression} AS ${alias}`);
+  // Schema-only requests can avoid the row scan.
   const metadataOnly = [...metrics.keys()].every((id) =>
     ['column_count', 'profiling_type', 'declared_type', 'is_groupable', 'is_orderable'].includes(id)
   );
   const query = metadataOnly
     ? `SELECT ${expressions.join(',\n')}`
     : `SELECT count(*) AS __rows${expressions.length ? ', ' + expressions.join(',\n') : ''} FROM ${source}`;
+  // Normalize temporal values in DuckDB before the client can round timestamps or change their timezone.
   const temporal = new Map(
     planned
       .filter(({ type }) => ['date', 'timestamp', 'timestamptz'].includes(type))
@@ -433,6 +332,7 @@ export function createProfilingPlan(
     return alias;
   });
   const decode = (row: Record<string, unknown>, skipped?: ProfileSkip[]): ProfileResult[] => {
+    // Missing aliases indicate invalid transport. SQL NULL represents an undefined result or a documented skip.
     const results: ProfileResult[] = [];
     for (const metric of planned) {
       if (!Object.hasOwn(row, metric.alias)) throw new Error(`Missing aggregate: ${metric.alias}`);

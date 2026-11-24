@@ -43,6 +43,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Validate nested values from callers. Track ancestors so shared objects can appear in separate branches. */
 function validateValue(value: unknown, parents = new Set<object>()): asserts value is MetricValue {
   if (!isRecord(value) || parents.has(value) || parents.size > 100) throw new TypeError('Invalid or cyclic MetricValue');
   const raw = value.value;
@@ -86,6 +87,7 @@ function validateResult(row: unknown): asserts row is ProfileResult {
   validateValue(row.value);
 }
 
+/** Validate row context before charts use the column positions and matrix dimensions. */
 function indexTableData(input: unknown): Map<string, ReportTableData> {
   if (!Array.isArray(input)) throw new TypeError('Invalid report table data');
   const result = new Map<string, ReportTableData>();
@@ -143,6 +145,7 @@ function table(headers: string[], rows: string[][]): string {
   return `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
+/** Keep absent metrics distinct from computed nulls and retain exact values in detail tables. */
 function markup(value: MetricValue | undefined, t: Translate): string {
   if (!value) return absent(t);
   if (value.type === 'null') return `<span class="muted" title="${t('Computed result is undefined')}">${t('Undefined')}</span>`;
@@ -161,6 +164,7 @@ function markup(value: MetricValue | undefined, t: Translate): string {
   return `<span class="value" title="${t(value.type)}">${escape(text(value, t))}</span>`;
 }
 
+/** Use finite approximations for chart geometry while retaining the original metric values. */
 function numeric(value: MetricValue | undefined): number | undefined {
   if (!value || !['integer', 'decimal', 'number'].includes(value.type)) return undefined;
   const number = Number(value.value);
@@ -352,6 +356,7 @@ function duplicateSizes(value: MetricValue | undefined, t: Translate): string {
   return barChart(items.slice(0, 12), t('Duplicate groups by size'), `<p class="chart-note">${note}</p>`, t);
 }
 
+/** Surface statistical observations only when the supplied metrics support them. */
 function observations(columns: Map<string, ProfileResult[]>, duplicates: MetricValue | undefined,
     pairs: readonly RankedPair[], columnLink: (name: string) => string, t: Translate): string {
   const rows: string[][] = [];
@@ -527,6 +532,7 @@ function coordinate(value: string | null | undefined, temporal = false): number 
 
 function axisRatio(value: number, min: number, max: number): number {
   if (min === max) return 0.5;
+  // Scale endpoints before subtracting so a range spanning extreme values can stay finite.
   const scale = Math.max(Math.abs(min), Math.abs(max), Number.MIN_VALUE);
   const fraction = (value / scale - min / scale) / (max / scale - min / scale);
   return Math.min(1, Math.max(0, fraction));
@@ -752,8 +758,95 @@ dt{font-size:.74rem;color:var(--muted)}dd{margin:.25rem 0 0;font-size:1.65rem;li
 @media print{header,main,footer{max-width:none;padding:1rem 0}nav{display:none}.table-scroll{max-height:none;overflow:visible}.chart{break-inside:avoid}.column::details-content{content-visibility:visible}.column>summary{margin-bottom:1rem}}
 `;
 
+/** Render one table from validated records and optional row context. */
+function renderTable(
+  name: string, rows: readonly ProfileResult[], index: number, data: ReportTableData | undefined,
+  run: ReportRun | undefined, t: Translate,
+): string {
+  const pairs = rows.filter((row) => row.columns.length === 2);
+  const ranked = rankPairs(pairs);
+  const tableRows = rows.filter((row) => !row.columns.length);
+  const values = new Map(tableRows.map((row) => [row.metric, row.value]));
+  const columns = new Map<string, ProfileResult[]>();
+  for (const row of rows.filter((row) => row.columns.length === 1)) {
+    if (!columns.has(row.columns[0])) columns.set(row.columns[0], []);
+    columns.get(row.columns[0])!.push(row);
+  }
+  // Positional anchors are safe and unique even when source names contain punctuation or markup.
+  const prefix = `table-${index}`;
+  const columnIndexes = new Map([...columns.keys()].map((column, i) => [column, i]));
+  const columnLink = (column: string) => {
+    const i = columnIndexes.get(column);
+    return i === undefined ? escape(column) : `<a class="column-link" href="#${prefix}-column-${i}">${escape(column)}</a>`;
+  };
+  const missingCount = values.get('missing_cell_count');
+  const missingRate = numeric(values.get('missing_cell_rate'));
+  const missingPercent = missingRate === undefined ? undefined : percentage.format(missingRate);
+  const overview: [key: string, value: string, note?: string][] = [
+    ['Rows', markup(values.get('row_count'), t)], ['Columns', markup(values.get('column_count'), t)],
+    missingCount || !missingPercent
+      ? ['Missing cells', markup(missingCount, t), missingPercent]
+      : ['Missing-cell rate', missingPercent],
+    ['Duplicate groups', markup(values.get('duplicate_group_count'), t)],
+  ];
+  const columnsWithMissing = values.get('columns_with_missing_count');
+  if (columnsWithMissing) overview.push(['Columns with missing values', markup(columnsWithMissing, t)]);
+  const memory = values.get('table_memory_bytes');
+  if (memory) overview.push(['Table memory (bytes)', markup(memory, t)]);
+  const duplicates = duplicateSizes(values.get('duplicate_group_row_count'), t) + (data ? duplicateRows(data, t) : '');
+  // Row-based views require the optional context collected separately from the metric records.
+  const scatter = data ? interactions(data, ranked, prefix, t) : '';
+  const trends = data ? timeSeries(data, columns, prefix, t) : '';
+  const variables = [...columns].map(([columnName, metrics], columnIndex) => {
+    const anchor = `${prefix}-column-${columnIndex}`;
+    const stats = new Map(metrics.map((row) => [row.metric, row.value]));
+    const profilingType = stats.get('profiling_type');
+    const role = profilingType?.type === 'string' ? profilingType.value : undefined;
+    const missingKey = stats.has('missing_count') ? 'missing_count' : 'null_count';
+    const specific = summariesByRole.get(role ?? '') ?? ['min', 'max', 'mean', 'median'];
+    const summary = ['observation_count', 'present_count', missingKey, 'missing_rate', 'distinct_count', ...specific]
+      .filter((key) => stats.has(key))
+      .map((key) => {
+        const value = stats.get(key);
+        const rate = key === 'missing_rate' ? numeric(value) : undefined;
+        return `<div><dt>${escape(label(key, t))}</dt><dd>${rate === undefined ? markup(value, t) : percentage.format(rate)}</dd></div>`;
+      }).join('');
+    const type = profilingType ?? stats.get('declared_type');
+    return `<details class="column" id="${anchor}">
+        <summary>${escape(columnName)} <span class="type">${type ? escape(t(text(type, t))) : t('Type not supplied')}</span></summary>
+        ${summary ? `<dl class="column-stats">${summary}</dl>` : ''}
+        ${columnCharts(metrics, stats, role, anchor, t)}
+        <details class="raw" id="${anchor}-exact"><summary>${t('All {count} column metrics · exact values and parameters').replace('{count}', String(metrics.length))}</summary>${metricTable(metrics, t)}</details>
+      </details>`;
+  }).join('');
+  const sectionIndex = [
+    ['Observations', `${prefix}-section-0`], ['Variables', `${prefix}-section-1`],
+    ...(scatter ? [['Interactions', `${prefix}-interactions`]] : []),
+    ['Correlations', `${prefix}-section-2`],
+    ...(trends ? [['Time series', `${prefix}-time-series`]] : []),
+    ['Missing values', `${prefix}-section-3`],
+    ...(data ? [['Sample rows', `${prefix}-samples`]] : []),
+    ...(duplicates ? [['Duplicate data', `${prefix}-duplicates`]] : []),
+    ['Table details', `${prefix}-section-4`], ...(run ? [['Reproduction', 'reproduction']] : []),
+  ].map(([heading, id]) => `<a href="#${id}">${t(heading)}</a>`);
+  return `<section id="${prefix}"><h2>${escape(name)}</h2>
+<dl class="overview">${overview.map(([key, value, note]) => `<div><dt>${t(key)}</dt><dd>${value}${note ? `<span class="overview-note">${note}</span>` : ''}</dd></div>`).join('')}</dl>
+${typeDistribution(values.get('column_type_counts'), columns, t)}
+<nav class="index" aria-label="${escape(name)} ${t('report sections')}">${sectionIndex.join('')}</nav>
+<div class="report-section" id="${prefix}-section-0"><h3>${t('Data quality observations')}</h3>${observations(columns, values.get('duplicate_group_count'), ranked, columnLink, t)}</div>
+<div class="report-section" id="${prefix}-section-1"><h3>${t('Variables')} <span class="muted">· ${columns.size} ${t('profiled')}</span></h3>${columns.size ? `<nav aria-label="${escape(name)} ${t('columns')}">${[...columns.keys()].map((key, i) => `<a href="#${prefix}-column-${i}">${escape(key)}</a>`).join('')}</nav>${variables}` : `<p class="muted">${t('Single-column metrics were not supplied.')}</p>`}</div>
+${scatter ? `<div class="report-section" id="${prefix}-interactions"><h3>${t('Interactions')}</h3>${scatter}</div>` : ''}
+<div class="report-section" id="${prefix}-section-2"><h3>${t('Correlations and pairwise metrics')}</h3>${pairwise(pairs, ranked, prefix, columnLink, t)}</div>
+${trends ? `<div class="report-section" id="${prefix}-time-series"><h3>${t('Time series')}</h3>${trends}</div>` : ''}
+<div class="report-section" id="${prefix}-section-3"><h3>${t('Missing values')}</h3>${missingValues(columns, values.get('row_count'), columnLink, t)}${data ? missingPatterns(data, t) : ''}</div>
+${data ? `<div class="report-section" id="${prefix}-samples"><h3>${t('Sample rows')}</h3>${rowSamples(data, prefix, t)}</div>` : ''}
+${duplicates ? `<div class="report-section" id="${prefix}-duplicates"><h3>${t('Duplicate data')}</h3>${duplicates}</div>` : ''}
+<div class="report-section" id="${prefix}-section-4"><h3>${t('Table details')}</h3>${tableRows.length ? metricTable(tableRows, t) : `<p class="muted">${t('Table-level metrics were not supplied.')}</p>`}</div></section>`;
+}
+
 /** Render protocol-v1 profiling results as a standalone, offline HTML document. */
 export function renderReport(results: readonly ProfileResult[], options: ReportOptions = {}): string {
+  // Validate the document inputs once before composing the table sections.
   if (!Array.isArray(results)) throw new TypeError('results must be an array of ProfileResult');
   if (!isRecord(options) || Object.keys(options).some((key) => !['title', 'theme', 'language', 'tableData', 'run'].includes(key)) ||
       (options.title !== undefined && typeof options.title !== 'string') ||
@@ -770,86 +863,7 @@ export function renderReport(results: readonly ProfileResult[], options: ReportO
     if (!tables.has(row.table_name)) tables.set(row.table_name, []);
     tables.get(row.table_name)!.push(row);
   }
-  const sections = [...tables].map(([name, rows], index) => {
-    const data = tableData.get(name);
-    const pairs = rows.filter((row) => row.columns.length === 2);
-    const ranked = rankPairs(pairs);
-    const tableRows = rows.filter((row) => !row.columns.length);
-    const values = new Map(tableRows.map((row) => [row.metric, row.value]));
-    const columns = new Map<string, ProfileResult[]>();
-    for (const row of rows.filter((row) => row.columns.length === 1)) {
-      if (!columns.has(row.columns[0])) columns.set(row.columns[0], []);
-      columns.get(row.columns[0])!.push(row);
-    }
-    const prefix = `table-${index}`;
-    const columnIndexes = new Map([...columns.keys()].map((column, i) => [column, i]));
-    const columnLink = (column: string) => {
-      const i = columnIndexes.get(column);
-      return i === undefined ? escape(column) : `<a class="column-link" href="#${prefix}-column-${i}">${escape(column)}</a>`;
-    };
-    const missingCount = values.get('missing_cell_count');
-    const missingRate = numeric(values.get('missing_cell_rate'));
-    const missingPercent = missingRate === undefined ? undefined : percentage.format(missingRate);
-    const overview: [key: string, value: string, note?: string][] = [
-      ['Rows', markup(values.get('row_count'), t)], ['Columns', markup(values.get('column_count'), t)],
-      missingCount || !missingPercent
-        ? ['Missing cells', markup(missingCount, t), missingPercent]
-        : ['Missing-cell rate', missingPercent],
-      ['Duplicate groups', markup(values.get('duplicate_group_count'), t)],
-    ];
-    const columnsWithMissing = values.get('columns_with_missing_count');
-    if (columnsWithMissing) overview.push(['Columns with missing values', markup(columnsWithMissing, t)]);
-    const memory = values.get('table_memory_bytes');
-    if (memory) overview.push(['Table memory (bytes)', markup(memory, t)]);
-    const duplicates = duplicateSizes(values.get('duplicate_group_row_count'), t) + (data ? duplicateRows(data, t) : '');
-    const scatter = data ? interactions(data, ranked, prefix, t) : '';
-    const trends = data ? timeSeries(data, columns, prefix, t) : '';
-    const variables = [...columns].map(([columnName, metrics], columnIndex) => {
-      const anchor = `${prefix}-column-${columnIndex}`;
-      const stats = new Map(metrics.map((row) => [row.metric, row.value]));
-      const profilingType = stats.get('profiling_type');
-      const role = profilingType?.type === 'string' ? profilingType.value : undefined;
-      const missingKey = stats.has('missing_count') ? 'missing_count' : 'null_count';
-      const specific = summariesByRole.get(role ?? '') ?? ['min', 'max', 'mean', 'median'];
-      const summary = ['observation_count', 'present_count', missingKey, 'missing_rate', 'distinct_count', ...specific]
-        .filter((key) => stats.has(key))
-        .map((key) => {
-          const value = stats.get(key);
-          const rate = key === 'missing_rate' ? numeric(value) : undefined;
-          return `<div><dt>${escape(label(key, t))}</dt><dd>${rate === undefined ? markup(value, t) : percentage.format(rate)}</dd></div>`;
-        }).join('');
-      const type = profilingType ?? stats.get('declared_type');
-      return `<details class="column" id="${anchor}">
-        <summary>${escape(columnName)} <span class="type">${type ? escape(t(text(type, t))) : t('Type not supplied')}</span></summary>
-        ${summary ? `<dl class="column-stats">${summary}</dl>` : ''}
-        ${columnCharts(metrics, stats, role, anchor, t)}
-        <details class="raw" id="${anchor}-exact"><summary>${t('All {count} column metrics · exact values and parameters').replace('{count}', String(metrics.length))}</summary>${metricTable(metrics, t)}</details>
-      </details>`;
-    }).join('');
-    const sectionIndex = [
-      ['Observations', `${prefix}-section-0`], ['Variables', `${prefix}-section-1`],
-      ...(scatter ? [['Interactions', `${prefix}-interactions`]] : []),
-      ['Correlations', `${prefix}-section-2`],
-      ...(trends ? [['Time series', `${prefix}-time-series`]] : []),
-      ['Missing values', `${prefix}-section-3`],
-      ...(data ? [['Sample rows', `${prefix}-samples`]] : []),
-      ...(duplicates ? [['Duplicate data', `${prefix}-duplicates`]] : []),
-      ['Table details', `${prefix}-section-4`], ...(run ? [['Reproduction', 'reproduction']] : []),
-    ].map(([heading, id]) => `<a href="#${id}">${t(heading)}</a>`);
-    return `<section id="${prefix}"><h2>${escape(name)}</h2>
-<dl class="overview">${overview.map(([key, value, note]) => `<div><dt>${t(key)}</dt><dd>${value}${note ? `<span class="overview-note">${note}</span>` : ''}</dd></div>`).join('')}</dl>
-${typeDistribution(values.get('column_type_counts'), columns, t)}
-<nav class="index" aria-label="${escape(name)} ${t('report sections')}">${sectionIndex.join('')}</nav>
-<div class="report-section" id="${prefix}-section-0"><h3>${t('Data quality observations')}</h3>${observations(columns, values.get('duplicate_group_count'), ranked, columnLink, t)}</div>
-<div class="report-section" id="${prefix}-section-1"><h3>${t('Variables')} <span class="muted">· ${columns.size} ${t('profiled')}</span></h3>${columns.size ? `<nav aria-label="${escape(name)} ${t('columns')}">${[...columns.keys()].map((key, i) => `<a href="#${prefix}-column-${i}">${escape(key)}</a>`).join('')}</nav>${variables}` : `<p class="muted">${t('Single-column metrics were not supplied.')}</p>`}</div>
-${scatter ? `<div class="report-section" id="${prefix}-interactions"><h3>${t('Interactions')}</h3>${scatter}</div>` : ''}
-<div class="report-section" id="${prefix}-section-2"><h3>${t('Correlations and pairwise metrics')}</h3>${pairwise(pairs, ranked, prefix, columnLink, t)}</div>
-${trends ? `<div class="report-section" id="${prefix}-time-series"><h3>${t('Time series')}</h3>${trends}</div>` : ''}
-<div class="report-section" id="${prefix}-section-3"><h3>${t('Missing values')}</h3>${missingValues(columns, values.get('row_count'), columnLink, t)}${data ? missingPatterns(data, t) : ''}</div>
-${data ? `<div class="report-section" id="${prefix}-samples"><h3>${t('Sample rows')}</h3>${rowSamples(data, prefix, t)}</div>` : ''}
-${duplicates ? `<div class="report-section" id="${prefix}-duplicates"><h3>${t('Duplicate data')}</h3>${duplicates}</div>` : ''}
-<div class="report-section" id="${prefix}-section-4"><h3>${t('Table details')}</h3>${tableRows.length ? metricTable(tableRows, t) : `<p class="muted">${t('Table-level metrics were not supplied.')}</p>`}</div></section>`;
-  }).join('');
+  const sections = [...tables].map(([name, rows], index) => renderTable(name, rows, index, tableData.get(name), run, t)).join('');
   const title = options.title ?? t('Data profile');
   return `<!doctype html><html lang="${language}" data-theme="${options.theme ?? 'light'}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

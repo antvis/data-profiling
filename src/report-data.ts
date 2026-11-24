@@ -1,5 +1,5 @@
-import { createProfilingPlan, identifier, kind, literal, nanAsNull, type ProfileColumn } from './plan.js';
-import type { ProfilingConnection } from './profile.js';
+import { identifier, kind, nanAsNull, tableSource, type ProfileColumn, type ProfilingConnection } from './duckdb.js';
+import { createProfilingPlan } from './plan.js';
 
 export interface ReportRow {
   position: number;
@@ -53,12 +53,14 @@ export async function collectReportData(
   const counts = plan.decode((await read(plan.sql))[0]);
   const rowCount = Number(counts.find((row) => row.metric === 'row_count')!.value.value);
   const missing = new Map(counts.filter((row) => row.metric === 'missing_count').map((row) => [row.columns[0], Number(row.value.value)]));
+  // Use the same NaN normalization for samples, duplicate groups, and missingness.
   const fields = columns.map(nanAsNull);
   const aliases = fields.map((_, i) => `c${i}`);
   const projection = fields.map((field, i) => `${field} AS ${aliases[i]}`).join(', ');
   const values = aliases.map((alias) => `${preview(alias)} AS ${alias}`).join(', ');
   const rowValues = (row: Record<string, unknown>) => aliases.map((alias) => row[alias] === null ? null : String(row[alias]));
-  const source = `query_table(${literal(tableName)})`;
+  const source = tableSource(tableName);
+  // Sample by row position in DuckDB so previews and plots only transfer a bounded number of rows.
   const step = Math.max(1, Math.ceil((rowCount - 1) / (plotSize - 1)));
   const include = `(p - 1) % ${step} = 0 OR p = ${rowCount}`;
   const rows = rowCount && columns.length ? (await read(
@@ -66,12 +68,14 @@ export async function collectReportData(
       SELECT p::VARCHAR AS position, ${values} FROM numbered
       WHERE p <= ${sampleSize} OR p > ${rowCount - sampleSize} OR ${include} ORDER BY p`,
   )).map((row) => ({ position: Number(row.position), values: rowValues(row) })) : [];
+  // Group original values before truncating the display text so distinct rows stay distinct.
   const duplicates = rowCount > 1 && columns.length ? (await read(
     `WITH repeated AS (SELECT count(*) AS n, ${projection} FROM ${source}
       GROUP BY ${fields.join(', ')} HAVING count(*) > 1)
       SELECT n::VARCHAR AS occurrences, ${values} FROM repeated
       ORDER BY n DESC, ${aliases.map((alias) => `repeated.${alias}::VARCHAR`).join(', ')} LIMIT ${sampleSize}`,
   )).map((row) => ({ count: String(row.occurrences), values: rowValues(row) })) : [];
+  // Correlate whole-table missingness flags only where they have nonzero variance.
   const varying = columns.flatMap((column, i) => {
     const count = missing.get(column.name) ?? 0;
     return count > 0 && count < rowCount ? [i] : [];
