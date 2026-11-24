@@ -1,8 +1,10 @@
-import { additionalMetricIds, createProfilingPlan, kind, nanAsNull, scalar, type ProfileColumn, type MetricConfig } from '../src/plan.js';
+import { identifier, kind, nanAsNull, tableSource, type ProfileColumn, type ProfilingConnection } from '../src/duckdb.js';
+import { createProfilingPlan, type MetricConfig } from '../src/plan.js';
+import { additionalMetricIds } from '../src/metrics.js';
 import { nativeDistributions } from '../src/distributions.js';
-import type { ProfileOptions, ProfilingConnection } from '../src/profile.js';
+import type { ProfileOptions } from '../src/profile.js';
 import type { ReportTableData } from '../src/report-data.js';
-import type { ProfileResult } from '../src/types.js';
+import { scalar, type ProfileResult } from '../src/types.js';
 
 export interface PlaygroundOptions {
   mode: 'overview' | 'detailed';
@@ -64,9 +66,7 @@ export function plainValue(value: unknown): unknown {
   return value;
 }
 
-const q = (value: string) => `"${value.replaceAll('"', '""')}"`;
-const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
-
+/** Run the browser preset using the same native planner and decoder as the Node library. */
 export async function profileDataset(
   connection: ProfilingConnection,
   table: string,
@@ -90,14 +90,14 @@ export async function profileDataset(
   const exact = [...new Set(plan.metrics.filter((metric) => ['integer', 'decimal', 'duration'].includes(metric.type)).map((metric) => metric.alias))];
   // Arrow exposes decimal limbs; cast exact aggregates before crossing the browser boundary.
   const sql = exact.length
-    ? `SELECT * REPLACE (${exact.map((alias) => `${q(alias)}::VARCHAR AS ${q(alias)}`).join(', ')}) FROM (${plan.sql})`
+    ? `SELECT * REPLACE (${exact.map((alias) => `${identifier(alias)}::VARCHAR AS ${identifier(alias)}`).join(', ')}) FROM (${plan.sql})`
     : plan.sql;
   const rows = plan.decode((await connection.runAndReadAll(sql)).getRowObjectsJson()[0]);
   const distributions = await nativeDistributions(connection, table, columns,
     new Map(['numeric_histogram', ...(options.mode === 'detailed' ? ['quantiles'] : [])].map((id) => [id, true])),
     { bins: options.bins, maxBins: 50 });
   rows.push(...distributions.results);
-  const source = `query_table(${literal(table)})`;
+  const source = tableSource(table);
   const duplicates = (await connection.runAndReadAll(
     `SELECT count(*)::VARCHAR AS n FROM (SELECT 1 FROM ${source} GROUP BY ${columns.map(nanAsNull).join(', ')} HAVING count(*) > 1)`
   )).getRowObjectsJson()[0];
@@ -108,7 +108,7 @@ export async function profileDataset(
     const pairs = numeric.flatMap((a, i) => numeric.slice(i + 1).map((b) => [a.name, b.name]));
     if (pairs.length) {
       const row = (await connection.runAndReadAll(`SELECT ${pairs.map(([a, b], i) =>
-        `corr(${q(a)}, ${q(b)}) FILTER (WHERE isfinite(${q(a)}) AND isfinite(${q(b)})) AS p${i}`
+        `corr(${identifier(a)}, ${identifier(b)}) FILTER (WHERE isfinite(${identifier(a)}) AND isfinite(${identifier(b)})) AS p${i}`
       ).join(', ')} FROM ${source}`)).getRowObjectsJson()[0];
       pairs.forEach((pair, i) => rows.push({ protocol_version: 1, table_name: table, columns: pair,
         metric: 'pearson_r', parameters: {}, value: scalar('number', row[`p${i}`]) }));
