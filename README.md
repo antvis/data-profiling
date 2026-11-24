@@ -2,11 +2,13 @@
 
 # Data Profiling
 
-[Live playground](https://data-profiling.antv.vision/)
+[Live playground](https://data-profiling.antv.vision/) · [Agent Skill](./skills/data-profiling/SKILL.md)
 
 The ES module data profiling foundation for AVA. Supply the caller's DuckDB connection, table name and known schema; receive structured statistics through a consistent result protocol. AVA owns data access, sessions and result consumption; business rules and interpretation stay with the application or agent.
 
 The catalog contains 149 metric IDs spanning table and column quality, numeric distributions, categories, text, correlations, dates, files, images and time series. Applicable metrics run in batches, native aggregates share computation, and only statistics return to JavaScript. See [metric support by type](#metric-support-by-type) and the [metric catalog and definitions](./docs/metrics.md).
+
+Install the complete `skills/data-profiling/` directory in an Agent Skills-compatible client. The linked skill describes runtime setup and profiling for local files.
 
 ## Compute a profile
 
