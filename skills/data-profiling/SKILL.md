@@ -11,7 +11,7 @@ Use this skill to establish the structure, completeness, and empirical character
 
 - Resolve the input to a local file. The runner accepts headered CSV, tabular JSON, and Parquet. Preserve the source and apply any requested field selection explicitly.
 - Identify the unit of observation and the key fields when the user has supplied that context. Where field semantics are uncertain, use neutral descriptions grounded in the documented or inferred schema.
-- Limit metric selection to the analytical question when possible. The default profile includes row and column counts, inferred types, missingness, distinct counts, frequent values where applicable, and basic range and mean statistics.
+- Limit metric selection to the analytical question when possible. Use the [metric catalog](references/metrics.md) to identify default and optional IDs, eligible field types, and denominators.
 
 ## Execute the profile
 
