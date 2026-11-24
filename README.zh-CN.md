@@ -2,11 +2,13 @@
 
 # Data Profiling
 
-[在线体验](https://data-profiling.antv.vision/)
+[在线体验](https://data-profiling.antv.vision/) · [数据画像 Skill](./skills/data-profiling/SKILL.md)
 
 为 AVA 提供数据画像计算能力的 ES Modules 基础库。输入调用方的 DuckDB 连接、表名和已知 schema，输出统一的结构化统计结果。AVA 负责数据接入、会话和结果消费；业务规则和结果解释由应用或 Agent 负责。
 
 支持 149 个指标 ID，覆盖表与列质量、数值分布、类别与文本、相关性、日期时间、文件、图像和时序。按字段类型批量执行适用指标，原生聚合复用计算状态，只将统计结果返回 JavaScript。详见[指标支持矩阵](#指标支持矩阵)和[指标目录与计算口径](./docs/metrics.md)。
+
+将完整的 `skills/data-profiling/` 目录安装到兼容 Agent Skills 的客户端，即可对本地文件执行数据画像。运行环境和执行方法见上方 Skill。
 
 ## 计算画像
 

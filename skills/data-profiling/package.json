@@ -1,0 +1,17 @@
+{
+  "name": "data-profiling-skill-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "postinstall": "npm --prefix node_modules/data_profiling run build"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "2.0.0-r.1",
+    "@types/node": "22.20.4",
+    "data_profiling": "https://codeload.github.com/antvis/data-profiling/tar.gz/d01f36db4577eb448aadda113aa8d68a0c3f4fe4",
+    "typescript": "5.9.3"
+  }
+}
